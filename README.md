@@ -47,16 +47,16 @@ The pipeline is organized around reusable modules in `mri/`:
 ```mermaid
 flowchart TD
     A["Source dataset"]
-    B["Import or sync<br/>`tools/dataset/import_tcia_aligned.py`"]
-    C["Local aligned dataset<br/>`data/aligned_v2`"]
-    D["Shared dated split<br/>`data/splits/YYYY-MM-DD.yaml`"]
-    E["Segmentation stage<br/>train then infer"]
+    B["Import or sync data"]
+    C["Local aligned dataset"]
+    D["Create one shared split"]
+    E["Segmentation stage"]
     F["Segmentation probability maps"]
-    G["Classification stage<br/>train then infer"]
+    G["Classification stage"]
     H["Predictions, checkpoints, manifests, metrics"]
 
-    I["`mri/cli/research.py`<br/>runs the full local pipeline"]
-    J["`mri/cli/sweep.py`<br/>runs config sweeps and downstream promotion"]
+    I["Research runner"]
+    J["Sweep runner"]
 
     A --> B --> C --> D --> E --> F --> G --> H
 
