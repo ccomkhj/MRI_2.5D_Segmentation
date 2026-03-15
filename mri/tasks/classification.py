@@ -66,13 +66,18 @@ class ClassificationTask(Task):
     def aggregate_metrics(self, metrics_list: list[Dict]) -> Dict:
         if not metrics_list:
             return {}
-        agg = {"loss": 0.0, "acc": 0.0, "macro_f1": 0.0}
+        agg: Dict[str, float] = {}
+        counts: Dict[str, int] = {}
         for m in metrics_list:
-            for k in agg:
-                agg[k] += m.get(k, 0.0)
-        for k in agg:
-            agg[k] /= len(metrics_list)
+            for key, value in m.items():
+                agg[key] = agg.get(key, 0.0) + float(value)
+                counts[key] = counts.get(key, 0) + 1
+        for key in list(agg):
+            agg[key] /= counts[key]
         return agg
 
     def primary_metric(self, metrics: Dict) -> float:
         return metrics.get("macro_f1", 0.0)
+
+    def primary_metric_name(self) -> str:
+        return "macro_f1"

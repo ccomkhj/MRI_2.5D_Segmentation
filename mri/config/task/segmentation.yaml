@@ -1,30 +1,10 @@
-task:
-  name: segmentation
-  stage: train
+extends:
+  - ../preset/segmentation_train.yaml
+  - ../model/segmentation/segresnet.yaml
 
 data:
   metadata: data/aligned_v2/metadata.json
-  split_file: data/splits/seg_cases.yaml
+  split_file: data/splits/2026-03-08.yaml
   modalities: [t2, adc, calc]
   zero_pad_missing: true
   stack_depth: 5
-
-model:
-  name: segresnet
-  params:
-    in_channels: 7
-    out_channels: 2
-    spatial_dims: 2
-
-train:
-  batch_size: 4
-  epochs: 100
-  lr: 5e-5
-  weight_decay: 1e-4
-  output_dir: checkpoints/seg
-
-loss:
-  name: dice_bce
-
-metrics:
-  names: [dice]

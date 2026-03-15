@@ -1,0 +1,17 @@
+name: downstream-depth-grid
+purpose: classification
+base_config: ../../task/classification.yaml
+output_root: ../../../../experiments/classification
+launcher: slurm
+slurm_script: scripts/new/train
+max_concurrent_jobs: 20
+tags: [paper, classification, downstream]
+wandb:
+  project: mri-segmentation
+
+matrix:
+  data.depth.depth: [12, 16, 20]
+  data.selection.min_prob: [0.3, 0.5]
+
+static_overrides:
+  data.seg_pred_dir: predictions/segmentation/top1

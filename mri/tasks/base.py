@@ -20,3 +20,6 @@ class Task:
 
     def primary_metric(self, metrics: Dict) -> float:
         return -metrics.get("loss", 0.0)
+
+    def primary_metric_name(self) -> str:
+        return "loss"

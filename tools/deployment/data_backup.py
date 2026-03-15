@@ -25,7 +25,7 @@ Workflow:
     1. Run this script locally to create backup
     2. Git clone repo on cloud machine
     3. Transfer backup.zip to cloud machine (scp/rsync)
-    4. Unzip on cloud machine: python tools/data_restore.py backup.zip
+    4. Unzip on cloud machine: python tools/deployment/data_restore.py backup.zip
 """
 
 import argparse
@@ -249,7 +249,7 @@ def create_backup(args):
     print("\n3. Extract on cloud machine:")
     print(f"   # On cloud machine:")
     print(f"   cd /path/to/repo")
-    print(f"   python tools/data_restore.py {output_path.name}")
+    print(f"   python tools/deployment/data_restore.py {output_path.name}")
 
     print("\n4. Verify data integrity:")
     print("   python service/validate_data.py")

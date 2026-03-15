@@ -1,0 +1,150 @@
+#!/bin/bash
+#SBATCH --job-name=mri-train-native
+#SBATCH --output=slurm-%j.out
+#SBATCH --error=slurm-%j.err
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpus
+#SBATCH --account=ebrains-0000006
+
+# ============================================================================
+# Native HPC training launcher (no Docker/Singularity)
+# ============================================================================
+# Works in both modes:
+#   1) Direct run: bash scripts/new/train [args...]
+#   2) SLURM run:  sbatch scripts/new/train [args...]
+#
+# Examples:
+#   bash scripts/new/train --config mri/config/task/segmentation.yaml
+#   sbatch scripts/new/train --config mri/config/task/segmentation.yaml --epochs 50
+#   bash scripts/new/train --dry-run --config mri/config/task/segmentation.yaml
+# ============================================================================
+
+set -euo pipefail
+
+if [[ -z "${BASH_VERSION:-}" ]]; then
+    exec bash "$0" "$@"
+fi
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}" ]]; then
+    PROJECT_DIR="${SLURM_SUBMIT_DIR}"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+cd "${PROJECT_DIR}" || {
+    echo "ERROR: Cannot change to project directory: ${PROJECT_DIR}"
+    exit 1
+}
+
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    set -a
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/data}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_DIR}/checkpoints}"
+WANDB_DIR="${WANDB_DIR:-${PROJECT_DIR}/wandb}"
+WANDB_MODE="${WANDB_MODE:-offline}"
+PRETRAINED_CACHE_DIR="${PRETRAINED_CACHE_DIR:-${PROJECT_DIR}/pretrained_model}"
+MPLCONFIGDIR="${MPLCONFIGDIR:-${PROJECT_DIR}/.cache/matplotlib}"
+
+mkdir -p "${CHECKPOINT_DIR}" "${WANDB_DIR}" "${PROJECT_DIR}/.aim" "${PRETRAINED_CACHE_DIR}/torch" "${PRETRAINED_CACHE_DIR}/huggingface" "${MPLCONFIGDIR}"
+
+export DATA_DIR
+export CHECKPOINT_DIR
+export WANDB_DIR
+export WANDB_MODE
+export TORCH_HOME="${TORCH_HOME:-${PRETRAINED_CACHE_DIR}/torch}"
+export HF_HOME="${HF_HOME:-${PRETRAINED_CACHE_DIR}/huggingface}"
+export MPLCONFIGDIR
+export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
+
+CONFIG=""
+HAS_CONFIG=0
+HAS_OUTPUT_DIR=0
+DRY_RUN=0
+PASS_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG="$2"
+            HAS_CONFIG=1
+            shift 2
+            ;;
+        --config=*)
+            CONFIG="${1#*=}"
+            HAS_CONFIG=1
+            shift
+            ;;
+        --output_dir|--output_dir=*)
+            HAS_OUTPUT_DIR=1
+            PASS_ARGS+=("$1")
+            if [[ "$1" == "--output_dir" && $# -gt 1 ]]; then
+                PASS_ARGS+=("$2")
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        *)
+            PASS_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${HAS_CONFIG} -eq 0 ]]; then
+    if [[ -f "${PROJECT_DIR}/mri/config/task/segmentation.yaml" ]]; then
+        CONFIG="mri/config/task/segmentation.yaml"
+    else
+        echo "ERROR: No default config found. Provide --config <path>."
+        exit 1
+    fi
+fi
+
+if [[ ${HAS_OUTPUT_DIR} -eq 0 ]]; then
+    PASS_ARGS+=("--output_dir" "${CHECKPOINT_DIR}")
+fi
+
+CMD=("${PYTHON_BIN}" "mri/cli/train.py" "--config" "${CONFIG}" "${PASS_ARGS[@]}")
+
+echo "============================================================================"
+echo "MRI Training (Native HPC)"
+echo "Project:    ${PROJECT_DIR}"
+echo "Python:     ${PYTHON_BIN}"
+echo "Config:     ${CONFIG}"
+echo "Data dir:   ${DATA_DIR}"
+echo "Checkpoints:${CHECKPOINT_DIR}"
+echo "WandB dir:  ${WANDB_DIR}"
+echo "MPL config: ${MPLCONFIGDIR}"
+echo "SLURM Job:  ${SLURM_JOB_ID:-local}"
+echo "Command:    ${CMD[*]}"
+echo "============================================================================"
+
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || true
+fi
+
+if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo "DRY RUN: command not executed."
+    exit 0
+fi
+
+if command -v srun &> /dev/null && [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    srun "${CMD[@]}"
+else
+    "${CMD[@]}"
+fi

@@ -20,6 +20,20 @@ def load_split_file(path: str | Path) -> Dict[str, List[str]]:
     return data
 
 
+def case_has_target(case_info: Dict[str, Any]) -> bool:
+    slices_with_target = case_info.get("slices_with_target")
+    if isinstance(slices_with_target, list):
+        return len(slices_with_target) > 0
+    return bool(slices_with_target)
+
+
+def classification_label_from_case_info(case_info: Dict[str, Any]) -> int:
+    label = int(case_info.get("class", 0))
+    if not case_has_target(case_info):
+        return 0
+    return label
+
+
 def build_segmentation_index(
     meta: Metadata, split_cases: List[str]
 ) -> List[Dict[str, Any]]:
@@ -40,11 +54,8 @@ def build_classification_index(
     for case_id, case_info in meta.cases.items():
         if case_id not in split_set:
             continue
-        label = int(case_info.get("class", 0))
-        has_target = case_info.get("slices_with_target")
-        has_target = bool(has_target) and (len(has_target) if isinstance(has_target, list) else has_target) > 0
-        if not has_target:
-            label = 0
+        label = classification_label_from_case_info(case_info)
+        has_target = case_has_target(case_info)
         index.append(
             {
                 "case_id": case_id,

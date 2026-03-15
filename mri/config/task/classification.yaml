@@ -1,10 +1,10 @@
-task:
-  name: classification
-  stage: train
+extends:
+  - ../preset/classification_train.yaml
+  - ../model/classification/swin.yaml
 
 data:
   metadata: data/aligned_v2/metadata.json
-  split_file: data/splits/cls_cases.yaml
+  split_file: data/splits/2026-03-08.yaml
   modalities: [t2, adc, calc]
   zero_pad_missing: true
   seg_pred_dir: data/seg_preds
@@ -20,23 +20,3 @@ data:
     crop_size: 192
     output_size: 256
     use_roi: true
-
-model:
-  name: swin
-  params:
-    in_channels: 3
-    num_classes: 5
-    spatial_dims: 3
-
-train:
-  batch_size: 2
-  epochs: 50
-  lr: 1e-4
-  weight_decay: 1e-4
-  output_dir: checkpoints/cls
-
-loss:
-  name: cross_entropy
-
-metrics:
-  names: [accuracy, macro_f1]

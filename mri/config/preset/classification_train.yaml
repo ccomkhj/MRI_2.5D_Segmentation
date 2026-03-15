@@ -1,0 +1,19 @@
+task:
+  name: classification
+  stage: train
+
+experiment:
+  purpose: classification
+
+train:
+  batch_size: 2
+  epochs: 50
+  lr: 1e-4
+  weight_decay: 1e-4
+  output_dir: checkpoints/cls
+
+loss:
+  name: cross_entropy
+
+metrics:
+  names: [accuracy, macro_f1]

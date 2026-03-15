@@ -1,0 +1,185 @@
+#!/bin/bash
+#SBATCH --job-name=mri-infer-native
+#SBATCH --output=slurm-%j.out
+#SBATCH --error=slurm-%j.err
+#SBATCH --time=08:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpus
+#SBATCH --account=ebrains-0000006
+
+# ============================================================================
+# Native HPC inference launcher (no Docker/Singularity)
+# ============================================================================
+# Works in both modes:
+#   1) Direct run: bash scripts/new/inference [args...]
+#   2) SLURM run:  sbatch scripts/new/inference [args...]
+#
+# Examples:
+#   bash scripts/new/inference --config mri/config/task/segmentation.yaml --split test
+#   bash scripts/new/inference --config mri/config/task/segmentation.yaml --checkpoint checkpoints/model_best.pt --output_dir predictions/seg
+#   sbatch scripts/new/inference --config mri/config/task/classification.yaml --split test
+#   bash scripts/new/inference --dry-run --config mri/config/task/segmentation.yaml --split test
+# ============================================================================
+
+set -euo pipefail
+
+if [[ -z "${BASH_VERSION:-}" ]]; then
+    exec bash "$0" "$@"
+fi
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}" ]]; then
+    PROJECT_DIR="${SLURM_SUBMIT_DIR}"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+
+cd "${PROJECT_DIR}" || {
+    echo "ERROR: Cannot change to project directory: ${PROJECT_DIR}"
+    exit 1
+}
+
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    set -a
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/data}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_DIR}/checkpoints}"
+PREDICTIONS_DIR="${PREDICTIONS_DIR:-${PROJECT_DIR}/predictions}"
+WANDB_DIR="${WANDB_DIR:-${PROJECT_DIR}/wandb}"
+WANDB_MODE="${WANDB_MODE:-offline}"
+PRETRAINED_CACHE_DIR="${PRETRAINED_CACHE_DIR:-${PROJECT_DIR}/pretrained_model}"
+MPLCONFIGDIR="${MPLCONFIGDIR:-${PROJECT_DIR}/.cache/matplotlib}"
+
+mkdir -p "${CHECKPOINT_DIR}" "${PREDICTIONS_DIR}" "${WANDB_DIR}" "${PROJECT_DIR}/.aim" "${PRETRAINED_CACHE_DIR}/torch" "${PRETRAINED_CACHE_DIR}/huggingface" "${MPLCONFIGDIR}"
+
+export DATA_DIR
+export CHECKPOINT_DIR
+export PREDICTIONS_DIR
+export WANDB_DIR
+export WANDB_MODE
+export TORCH_HOME="${TORCH_HOME:-${PRETRAINED_CACHE_DIR}/torch}"
+export HF_HOME="${HF_HOME:-${PRETRAINED_CACHE_DIR}/huggingface}"
+export MPLCONFIGDIR
+export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
+
+CONFIG=""
+SPLIT=""
+HAS_CONFIG=0
+HAS_SPLIT=0
+HAS_OUTPUT=0
+HAS_CHECKPOINT=0
+DRY_RUN=0
+PASS_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG="$2"
+            HAS_CONFIG=1
+            shift 2
+            ;;
+        --config=*)
+            CONFIG="${1#*=}"
+            HAS_CONFIG=1
+            shift
+            ;;
+        --split)
+            SPLIT="$2"
+            HAS_SPLIT=1
+            shift 2
+            ;;
+        --split=*)
+            SPLIT="${1#*=}"
+            HAS_SPLIT=1
+            shift
+            ;;
+        --output|--output=*|--output_dir|--output_dir=*)
+            HAS_OUTPUT=1
+            if [[ "$1" == "--output" && $# -gt 1 ]]; then
+                PASS_ARGS+=("--output_dir" "$2")
+                shift 2
+            elif [[ "$1" == --output=* ]]; then
+                PASS_ARGS+=("--output_dir=${1#*=}")
+                shift
+            else
+                PASS_ARGS+=("$1")
+                shift
+            fi
+            ;;
+        --checkpoint|--checkpoint=*)
+            HAS_CHECKPOINT=1
+            PASS_ARGS+=("$1")
+            if [[ "$1" == "--checkpoint" && $# -gt 1 ]]; then
+                PASS_ARGS+=("$2")
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        *)
+            PASS_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${HAS_CONFIG} -eq 0 ]]; then
+    if [[ -f "${PROJECT_DIR}/mri/config/task/segmentation.yaml" ]]; then
+        CONFIG="mri/config/task/segmentation.yaml"
+    else
+        echo "ERROR: No default config found. Provide --config <path>."
+        exit 1
+    fi
+fi
+
+if [[ ${HAS_SPLIT} -eq 0 ]]; then
+    SPLIT="test"
+fi
+
+if [[ ${HAS_OUTPUT} -eq 0 ]]; then
+    PASS_ARGS+=("--output_dir" "${PREDICTIONS_DIR}")
+fi
+
+CMD=("${PYTHON_BIN}" "mri/cli/infer.py" "--config" "${CONFIG}" "--split" "${SPLIT}" "${PASS_ARGS[@]}")
+
+echo "============================================================================"
+echo "MRI Inference (Native HPC)"
+echo "Project:    ${PROJECT_DIR}"
+echo "Python:     ${PYTHON_BIN}"
+echo "Config:     ${CONFIG}"
+echo "Split:      ${SPLIT}"
+echo "Mode:       mri/cli"
+echo "Data dir:   ${DATA_DIR}"
+echo "Checkpoints:${CHECKPOINT_DIR}"
+echo "Predictions:${PREDICTIONS_DIR}"
+echo "MPL config: ${MPLCONFIGDIR}"
+echo "SLURM Job:  ${SLURM_JOB_ID:-local}"
+echo "Command:    ${CMD[*]}"
+echo "============================================================================"
+
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || true
+fi
+
+if [[ ${DRY_RUN} -eq 1 ]]; then
+    echo "DRY RUN: command not executed."
+    exit 0
+fi
+
+if command -v srun &> /dev/null && [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    srun "${CMD[@]}"
+else
+    "${CMD[@]}"
+fi

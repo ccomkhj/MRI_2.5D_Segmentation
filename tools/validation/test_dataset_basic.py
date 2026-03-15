@@ -189,8 +189,8 @@ def main():
         print("\n📝 Next Steps:")
         print("  1. Install PyTorch and model libraries:")
         print("     pip install torch torchvision monai segmentation-models-pytorch")
-        print("\n  2. Run full model test:")
-        print(f"     python tools/test_2d5_models.py --manifest {args.manifest}")
+        print("\n  2. Run a segmentation smoke train:")
+        print("     python mri/cli/train.py --config mri/config/task/segmentation.yaml --epochs 1 --batch_size 2")
         
         return 0
     else:
@@ -199,4 +199,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

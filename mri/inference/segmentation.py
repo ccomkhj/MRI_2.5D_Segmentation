@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from mri.data.metadata import load_metadata
+from mri.tasks.segmentation_ops import compute_dice_score
 
 
 def run_segmentation_inference(
@@ -18,7 +19,8 @@ def run_segmentation_inference(
     metadata_path: str | Path,
     output_dir: str | Path,
     device: torch.device,
-) -> None:
+    threshold: float = 0.5,
+) -> Dict[str, float | int | str | None]:
     model = model.to(device)
     model.eval()
 
@@ -27,10 +29,13 @@ def run_segmentation_inference(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     case_buffers: Dict[str, Dict[str, np.ndarray]] = {}
+    dice_scores = []
+    num_samples = 0
 
     with torch.no_grad():
         for batch in dataloader:
             images = batch[0].to(device)
+            masks = batch[1]
             metas = batch[2]
             if isinstance(metas, dict):
                 meta_list = [
@@ -42,6 +47,8 @@ def run_segmentation_inference(
 
             logits = model(images)
             probs = torch.sigmoid(logits).cpu().numpy()
+            dice_scores.append(compute_dice_score(logits.cpu(), masks.cpu(), threshold=threshold))
+            num_samples += images.shape[0]
 
             for i, m in enumerate(meta_list):
                 case_id = m["case_id"]
@@ -62,3 +69,13 @@ def run_segmentation_inference(
         case_dir.mkdir(parents=True, exist_ok=True)
         np.save(case_dir / "prostate_prob.npy", arrays["prostate"])
         np.save(case_dir / "target_prob.npy", arrays["target"])
+
+    return {
+        "output_dir": str(output_dir),
+        "cases_written": len(case_buffers),
+        "num_samples": num_samples,
+        "segmentation_threshold": threshold,
+        "mean_dice": float(np.mean(dice_scores)) if dice_scores else None,
+        "primary_metric_name": "mean_dice",
+        "best_metric": float(np.mean(dice_scores)) if dice_scores else None,
+    }

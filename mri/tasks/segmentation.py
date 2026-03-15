@@ -8,16 +8,21 @@ import torch
 import torch.nn as nn
 
 from .base import Task
-from service.metrics import compute_dice_score
-from service.models import DiceLoss, DiceBCELoss, FocalTverskyLoss
+from .segmentation_ops import DiceBCELoss, DiceLoss, FocalTverskyLoss, compute_dice_score
 
 
 class SegmentationTask(Task):
     name = "segmentation"
 
-    def __init__(self, loss_name: str = "dice_bce", loss_params: Dict | None = None):
+    def __init__(
+        self,
+        loss_name: str = "dice_bce",
+        loss_params: Dict | None = None,
+        metric_threshold: float = 0.5,
+    ):
         self.loss_name = loss_name
         self.loss_params = loss_params or {}
+        self.metric_threshold = metric_threshold
         self.loss_fn = self._build_loss(loss_name, self.loss_params)
 
     def _build_loss(self, loss_name: str, params: Dict) -> nn.Module:
@@ -45,7 +50,11 @@ class SegmentationTask(Task):
         masks = masks.to(device)
         logits = model(images)
         loss = self.loss_fn(logits, masks)
-        dice = compute_dice_score(logits.detach().cpu(), masks.detach().cpu())
+        dice = compute_dice_score(
+            logits.detach().cpu(),
+            masks.detach().cpu(),
+            threshold=self.metric_threshold,
+        )
         metrics = {"loss": loss.item(), "dice": dice}
         return loss, metrics
 
@@ -55,20 +64,29 @@ class SegmentationTask(Task):
         masks = masks.to(device)
         logits = model(images)
         loss = self.loss_fn(logits, masks)
-        dice = compute_dice_score(logits.detach().cpu(), masks.detach().cpu())
+        dice = compute_dice_score(
+            logits.detach().cpu(),
+            masks.detach().cpu(),
+            threshold=self.metric_threshold,
+        )
         metrics = {"loss": loss.item(), "dice": dice}
         return loss, metrics
 
     def aggregate_metrics(self, metrics_list: list[Dict]) -> Dict:
         if not metrics_list:
             return {}
-        agg = {"loss": 0.0, "dice": 0.0}
+        agg: Dict[str, float] = {}
+        counts: Dict[str, int] = {}
         for m in metrics_list:
-            for k in agg:
-                agg[k] += m.get(k, 0.0)
-        for k in agg:
-            agg[k] /= len(metrics_list)
+            for key, value in m.items():
+                agg[key] = agg.get(key, 0.0) + float(value)
+                counts[key] = counts.get(key, 0) + 1
+        for key in list(agg):
+            agg[key] /= counts[key]
         return agg
 
     def primary_metric(self, metrics: Dict) -> float:
         return metrics.get("dice", 0.0)
+
+    def primary_metric_name(self) -> str:
+        return "dice"

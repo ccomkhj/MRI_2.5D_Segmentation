@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from loguru import logger
@@ -70,28 +70,75 @@ class Trainer:
 
         return self.task.aggregate_metrics(metrics_list)
 
-    def fit(self, train_loader, val_loader, epochs: int = 1) -> None:
+    def fit(self, train_loader, val_loader, epochs: int = 1, tracker=None) -> dict[str, Any]:
         best_metric: Optional[float] = None
+        best_epoch: Optional[int] = None
+        best_val_metrics: dict[str, float] = {}
+        final_train_metrics: dict[str, float] = {}
+        final_val_metrics: dict[str, float] = {}
+        history: list[dict[str, float | int | None]] = []
+        primary_metric_name = self.task.primary_metric_name()
+        best_checkpoint: Optional[Path] = None
+        last_checkpoint: Optional[Path] = None
         logger.info(f"Starting training for {epochs} epochs")
         logger.info(f"Checkpoint directory: {self.run_dir}")
         for epoch in range(1, epochs + 1):
             logger.info(f"Epoch {epoch}/{epochs} - training")
             train_metrics = self._run_epoch(train_loader, train=True)
             val_metrics = self._run_epoch(val_loader, train=False) if val_loader is not None else {}
+            final_train_metrics = train_metrics
+            final_val_metrics = val_metrics
 
             primary = self.task.primary_metric(val_metrics) if val_metrics else None
             if primary is not None and (best_metric is None or primary > best_metric):
                 best_metric = primary
-                self._save_checkpoint("best")
+                best_epoch = epoch
+                best_val_metrics = dict(val_metrics)
+                best_checkpoint = self._save_checkpoint("best")
 
-            self._save_checkpoint("last")
+            last_checkpoint = self._save_checkpoint("last")
 
             train_str = ", ".join(f"{k}: {v:.4f}" for k, v in train_metrics.items())
             val_str = ", ".join(f"{k}: {v:.4f}" for k, v in val_metrics.items())
             logger.info(f"Epoch {epoch}/{epochs} | train: {train_str} | val: {val_str}")
 
-    def _save_checkpoint(self, tag: str) -> None:
+            history_row: dict[str, float | int | None] = {
+                "epoch": epoch,
+                "primary_metric": primary,
+            }
+            for key, value in train_metrics.items():
+                history_row[f"train/{key}"] = value
+            for key, value in val_metrics.items():
+                history_row[f"val/{key}"] = value
+            history.append(history_row)
+
+            if tracker is not None:
+                tracker_metrics = {"epoch": epoch}
+                tracker_metrics.update({f"train/{key}": value for key, value in train_metrics.items()})
+                tracker_metrics.update({f"val/{key}": value for key, value in val_metrics.items()})
+                if primary is not None:
+                    tracker_metrics[f"val/{primary_metric_name}"] = primary
+                tracker.log_metrics(tracker_metrics, step=epoch)
+
+        return {
+            "history": history,
+            "summary": {
+                "primary_metric_name": primary_metric_name,
+                "best_metric": best_metric,
+                "best_epoch": best_epoch,
+                "best_val_metrics": best_val_metrics,
+                "final_train_metrics": final_train_metrics,
+                "final_val_metrics": final_val_metrics,
+            },
+            "artifacts": {
+                "best_checkpoint": best_checkpoint,
+                "last_checkpoint": last_checkpoint,
+            },
+        }
+
+    def _save_checkpoint(self, tag: str) -> Path:
         filename = f"{self.run_name}_{tag}.pt"
         path = self.run_dir / filename
         torch.save({"model": self.model.state_dict()}, path)
         logger.info(f"Saved checkpoint: {path}")
+        return path

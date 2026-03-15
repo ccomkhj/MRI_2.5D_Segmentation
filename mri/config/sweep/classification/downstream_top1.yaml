@@ -1,0 +1,11 @@
+name: downstream-top1
+output_root: ../../../../experiments/classification
+segmentation_results_root: ../../../../experiments/segmentation/stack-depth-grid
+classification_sweep_config: ./depth_grid.yaml
+prediction_splits: [train, val, test]
+inference_script: scripts/new/inference
+max_concurrent_jobs: 20
+launch_classification_sweep: true
+tags: [paper, classification, top1]
+wandb:
+  project: mri-segmentation

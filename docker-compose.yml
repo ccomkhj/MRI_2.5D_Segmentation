@@ -1,0 +1,76 @@
+# Docker Compose for MRI Segmentation Training
+# Usage:
+#   docker compose up train          # Run training
+#   docker compose up train-wandb    # Run training with wandb
+#   docker compose run --rm dev bash # Interactive shell
+
+services:
+  # Base training service (without wandb)
+  # train:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   volumes:
+  #     # Mount data directory
+  #     - ./data:/app/data:ro
+  #     # Mount checkpoints for persistence
+  #     - ./checkpoints:/app/checkpoints
+  #     # Mount aim logs
+  #     - ./.aim:/app/.aim
+  #     # Mount config (can override without rebuild)
+  #     - ./config.yaml:/app/config.yaml:ro
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   command: python service/train.py --config config.yaml
+
+  # Training with wandb enabled
+  train-wandb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data:ro
+      - ./checkpoints:/app/checkpoints
+      - ./.aim:/app/.aim
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - WANDB_API_KEY=${WANDB_API_KEY}
+    # Increase shared memory for PyTorch DataLoader workers
+    shm_size: '12gb'
+    # deploy:
+      # resources:
+      #   reservations:
+      #     devices:
+      #       - driver: nvidia
+      #         count: all
+      #         capabilities: [gpu]
+    command: >
+      python service/train.py 
+      --config config.yaml 
+      --wandb 
+      --wandb_project ${WANDB_PROJECT:-mri-segmentation}
+
+  # Development/interactive shell
+  # dev:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   volumes:
+  #     - .:/app
+  #   environment:
+  #     - WANDB_API_KEY=${WANDB_API_KEY}
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   stdin_open: true
+  #   tty: true
+  #   command: bash

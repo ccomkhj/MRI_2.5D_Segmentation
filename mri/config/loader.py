@@ -35,19 +35,42 @@ def _deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any
     return base
 
 
+def _load_yaml(path: Path) -> Dict[str, Any]:
+    with path.open() as f:
+        return yaml.safe_load(f) or {}
+
+
+def _load_user_config(path: Path, seen: set[Path]) -> Dict[str, Any]:
+    resolved_path = path.resolve()
+    if resolved_path in seen:
+        cycle = " -> ".join(str(p) for p in [*seen, resolved_path])
+        raise ValueError(f"Config extends cycle detected: {cycle}")
+
+    user_cfg = _load_yaml(path)
+    extends = user_cfg.pop("extends", [])
+    if isinstance(extends, str):
+        extends = [extends]
+
+    cfg: Dict[str, Any] = {}
+    next_seen = {*seen, resolved_path}
+    for base_ref in extends:
+        base_path = Path(base_ref)
+        if not base_path.is_absolute():
+            base_path = (path.parent / base_path).resolve()
+        cfg = _deep_update(cfg, _load_user_config(base_path, next_seen))
+
+    return _deep_update(cfg, user_cfg)
+
+
 def load_config(path: str | Path) -> Dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Config not found: {path}")
 
-    with path.open() as f:
-        user_cfg = yaml.safe_load(f) or {}
-
     cfg: Dict[str, Any] = {}
     if DEFAULTS_PATH.exists():
-        with DEFAULTS_PATH.open() as f:
-            defaults = yaml.safe_load(f) or {}
-        cfg = _deep_update(cfg, defaults)
+        cfg = _deep_update(cfg, _load_yaml(DEFAULTS_PATH))
 
+    user_cfg = _load_user_config(path, seen=set())
     cfg = _deep_update(cfg, user_cfg)
     return cfg

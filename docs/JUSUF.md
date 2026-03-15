@@ -75,7 +75,7 @@ exec "$(dirname "${BASH_SOURCE[0]}")/submit_slurm.sh" ${ARGS} "$@"
 
 **Good:**
 ```bash
-exec "/full/path/to/project/scripts/submit_slurm.sh" ${ARGS} "$@"
+exec "/full/path/to/project/scripts/new/train" "$@"
 ```
 
 ### 2. NVIDIA Driver Communication Error

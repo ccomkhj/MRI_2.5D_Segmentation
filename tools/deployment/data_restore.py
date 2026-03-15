@@ -6,13 +6,13 @@ This script extracts and verifies data backup on cloud machines.
 
 Usage:
     # Restore from backup
-    python tools/data_restore.py mri_data_backup_20240101_120000.zip
+    python tools/deployment/data_restore.py mri_data_backup_20240101_120000.zip
 
     # Dry run (show what would be extracted)
-    python tools/data_restore.py backup.zip --dry-run
+    python tools/deployment/data_restore.py backup.zip --dry-run
 
     # Force overwrite existing files
-    python tools/data_restore.py backup.zip --force
+    python tools/deployment/data_restore.py backup.zip --force
 """
 
 import argparse
@@ -166,7 +166,7 @@ def restore_backup(args):
     print("   pip install -r requirements.txt")
     
     print("\n3. Start training:")
-    print("   python service/train.py --config config.yaml")
+    print("   python mri/cli/train.py --config mri/config/task/segmentation.yaml")
     
     print("\n4. Monitor training:")
     print("   aim up")
@@ -204,4 +204,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

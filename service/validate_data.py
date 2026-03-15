@@ -71,7 +71,7 @@ def validate_manifest(manifest_path: Path) -> pd.DataFrame:
             print(f"    • Training will skip all batches (loss = 0)")
             print(f"    • You need segmentation masks for supervised learning")
             print(f"\n  To add masks, run:")
-            print(f"    python service/preprocess.py --step process_overlays")
+            print(f"    python tools/preprocessing/process_overlay_aligned.py")
     else:
         print(f"  Mask column: Not present")
 
@@ -340,7 +340,7 @@ def visualize_with_masks(df: pd.DataFrame, output_dir: Path):
         print("⚠ No masks found in processed_seg/")
         print("\nTo add masks:")
         print("  1. Make sure overlay data exists in data/overlay/")
-        print("  2. Run: python service/preprocess.py --step process_overlays")
+        print("  2. Run: python tools/preprocessing/process_overlay_aligned.py")
         return
 
     # Find matching case/series with masks
@@ -552,16 +552,14 @@ if __name__ == "__main__":
 
     if not processed_dir.exists():
         print(f"✗ Processed data directory not found: {processed_dir}")
-        print("\nPlease run preprocessing first:")
-        print("  python service/preprocess.py --all")
+        print("\nPlease run the required preprocessing tools first.")
         sys.exit(1)
 
     manifests = list(processed_dir.glob("class*/manifest.csv"))
 
     if not manifests:
         print(f"✗ No manifest files found in {processed_dir}")
-        print("\nPlease run preprocessing first:")
-        print("  python service/preprocess.py --all")
+        print("\nPlease run the required preprocessing tools first.")
         sys.exit(1)
 
     print(f"Found {len(manifests)} manifest file(s):")
@@ -613,8 +611,8 @@ if __name__ == "__main__":
     print("\nNext steps:")
     print("  1. Review the visualizations to confirm data quality")
     print(
-        "  2. If no masks found, run: python service/preprocess.py --step process_overlays"
+        "  2. If no masks found, run: python tools/preprocessing/process_overlay_aligned.py"
     )
-    print("  3. Once masks are available, train: python service/train.py")
+    print("  3. Once masks are available, train: python mri/cli/train.py --config mri/config/task/segmentation.yaml")
 
     print("\n" + "=" * 80 + "\n")

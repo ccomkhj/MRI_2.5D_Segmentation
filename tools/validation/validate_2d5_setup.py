@@ -266,11 +266,11 @@ def main():
     print("\n2. Install 2.5D pipeline dependencies:")
     print("   pip install -r requirements_2d5.txt")
 
-    print("\n3. Test the 2.5D pipeline:")
-    print("   python tools/test_2d5_models.py")
+    print("\n3. Run a modular segmentation smoke train:")
+    print("   python mri/cli/train.py --config mri/config/task/segmentation.yaml --epochs 1 --batch_size 2")
 
-    print("\n4. Read the documentation:")
-    print("   tools/README_2D5_PIPELINE.md")
+    print("\n4. Read the project documentation:")
+    print("   README.md")
 
     print("\n" + "=" * 80)
 

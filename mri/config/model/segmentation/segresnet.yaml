@@ -1,0 +1,6 @@
+model:
+  name: segresnet
+  params:
+    in_channels: 7
+    out_channels: 2
+    spatial_dims: 2

@@ -1,27 +1,38 @@
+data/nbia_ep2d_adc/
+data/nbia_ep2d_calc/
 data/nbia/
 data/processed/
+data/processed_ep2d_adc/
+data/processed_ep2d_calc/
 data/overlay/
 data/processed_seg/
+data/aligned_v2/
 data/visualizations/
 validation_results/
+logs/
+predictions/
+results/
 tools/__pycache__/
 .aim/
 service/__pycache__/
+scripts/__pycache__/
+mri/**/__pycache__/
+*.py[cod]
+**/.DS_Store
 
 # User experiment configs (keep default configs)
-experiments/
+/experiments/
 config_*.yaml
-!config.yaml
-!config_onecycle.yaml
 
 # Backup files
 *_backup_*.zip
 *_metadata.json
 backup*.zip
-docs/archive
-docs/guides
 checkpoints/
 *.zip
 
 service/*._metadata
-*.pyc
+docs/archive/
+archive/
+.worktrees/
+.cache/

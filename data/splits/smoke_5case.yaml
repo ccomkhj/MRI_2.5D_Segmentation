@@ -1,0 +1,8 @@
+train:
+- class4/case_0216
+- class2/case_0289
+- class4/case_0073
+val:
+- class3/case_0157
+test:
+- class1/case_0144

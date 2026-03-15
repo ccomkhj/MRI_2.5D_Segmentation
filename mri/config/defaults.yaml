@@ -2,6 +2,14 @@ task:
   name: segmentation
   stage: train
 
+experiment:
+  name: null
+  purpose: null
+  sweep_name: null
+  upstream_run: null
+  tags: []
+  notes: null
+
 data:
   metadata: data/aligned_v2/metadata.json
   split_file: null
@@ -46,9 +54,19 @@ loss:
 
 metrics:
   names: []
+  segmentation_threshold: 0.5
 
 inference:
   batch_size: 4
   device: auto
   output_dir: predictions
   checkpoint: null
+
+tracking:
+  wandb:
+    enabled: true
+    project: mri-segmentation
+    entity: null
+    mode: null
+    group: null
+    tags: []

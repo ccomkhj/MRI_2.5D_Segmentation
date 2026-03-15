@@ -1,0 +1,17 @@
+name: stack-depth-grid
+purpose: segmentation
+base_config: ../../task/segmentation.yaml
+output_root: ../../../../experiments/segmentation
+launcher: slurm
+slurm_script: scripts/new/train
+max_concurrent_jobs: 20
+tags: [paper, segmentation, stack_depth]
+wandb:
+  project: mri-segmentation
+
+matrix:
+  data.stack_depth: [3, 5, 7]
+  metrics.segmentation_threshold: [0.4, 0.5]
+
+static_overrides:
+  train.epochs: 20

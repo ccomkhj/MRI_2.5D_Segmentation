@@ -6,7 +6,7 @@ Provides both basic PyTorch transforms and MONAI-based transforms
 for medical image augmentation.
 
 Usage:
-    from tools.transforms_2d5 import get_train_transforms, get_val_transforms
+    from tools.dataset.transforms_2d5 import get_train_transforms, get_val_transforms
     
     train_transforms = get_train_transforms(image_size=(256, 256))
     dataset = MRI25DDataset(..., transform=train_transforms)
@@ -257,4 +257,3 @@ if __name__ == "__main__":
         print(f"    Mask unique: {aug_mask.unique().tolist()}")
     
     print("\n✓ Transforms test passed!")
-

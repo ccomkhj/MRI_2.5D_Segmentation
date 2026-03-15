@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# ============================================================================
+# Local research smoke workflow
+# ============================================================================
+# Runs a tiny CPU-only segmentation -> classification pipeline over 3 cases.
+#
+# Examples:
+#   bash scripts/new/research-smoke
+#   bash scripts/new/research-smoke --dry-run
+#   bash scripts/new/research-smoke --run-name smoke-check
+# ============================================================================
+
+set -euo pipefail
+
+if [[ -z "${BASH_VERSION:-}" ]]; then
+    exec bash "$0" "$@"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+cd "${PROJECT_DIR}" || {
+    echo "ERROR: Cannot change to project directory: ${PROJECT_DIR}"
+    exit 1
+}
+
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    set -a
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+SOURCE_DATA="${SOURCE_DATA:-/Users/huijokim/personal/tcia-handler/data/aligned_v2}"
+DEST_DATA="${DEST_DATA:-${PROJECT_DIR}/data/aligned_v2}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_DIR}/experiments/research}"
+MPLCONFIGDIR="${MPLCONFIGDIR:-${PROJECT_DIR}/.cache/matplotlib}"
+DEFAULT_RUN_NAME="research-smoke-$(date +%Y-%m-%d-%H-%M-%S)"
+
+mkdir -p "${OUTPUT_ROOT}" "${MPLCONFIGDIR}"
+
+export MPLCONFIGDIR
+export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
+
+HAS_RUN_NAME=0
+PASS_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --run-name|--run_name)
+            HAS_RUN_NAME=1
+            PASS_ARGS+=("$1")
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: $1 requires a value."
+                exit 1
+            fi
+            PASS_ARGS+=("$2")
+            shift 2
+            ;;
+        --run-name=*|--run_name=*)
+            HAS_RUN_NAME=1
+            PASS_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            PASS_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${HAS_RUN_NAME} -eq 0 ]]; then
+    PASS_ARGS+=("--run-name" "${DEFAULT_RUN_NAME}")
+fi
+
+CMD=(
+    "${PYTHON_BIN}" "mri/cli/research.py"
+    "--source-data" "${SOURCE_DATA}"
+    "--dest-data" "${DEST_DATA}"
+    "--import-mode" "link"
+    "--split-file" "data/splits/smoke_3case.yaml"
+    "--seg-config" "mri/config/task/segmentation_smoke.yaml"
+    "--cls-config" "mri/config/task/classification_smoke.yaml"
+    "--output-root" "${OUTPUT_ROOT}"
+    "--disable-wandb"
+    "--device" "cpu"
+    "${PASS_ARGS[@]}"
+)
+
+echo "============================================================================"
+echo "MRI Research Smoke"
+echo "Project:    ${PROJECT_DIR}"
+echo "Python:     ${PYTHON_BIN}"
+echo "Source:     ${SOURCE_DATA}"
+echo "Destination:${DEST_DATA}"
+echo "Output root:${OUTPUT_ROOT}"
+echo "MPL config: ${MPLCONFIGDIR}"
+echo "Command:    ${CMD[*]}"
+echo "============================================================================"
+
+"${CMD[@]}"

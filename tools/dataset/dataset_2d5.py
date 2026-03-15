@@ -7,7 +7,7 @@ data directory and stacks them to create 2.5D input tensors suitable for
 models like SMP ResUNet and MONAI SegResNet.
 
 Usage:
-    from tools.dataset_2d5 import MRI25DDataset
+    from tools.dataset.dataset_2d5 import MRI25DDataset
     from torch.utils.data import DataLoader
     
     dataset = MRI25DDataset(
@@ -521,4 +521,3 @@ if __name__ == "__main__":
     print(f"  Masks: {masks.shape if masks is not None else 'None'}")
     
     print("\n✓ All tests passed!")
-

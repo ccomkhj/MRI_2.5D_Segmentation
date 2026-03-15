@@ -331,8 +331,7 @@ def main():
         processed_dir = Path("data/processed")
         if not processed_dir.exists():
             print(f"✗ Processed data directory not found: {processed_dir}")
-            print("\nPlease run preprocessing first:")
-            print("  python service/preprocess.py --all")
+            print("\nPlease run the required preprocessing tools first.")
             sys.exit(1)
         
         manifests = list(processed_dir.glob("class*/manifest.csv"))
@@ -377,4 +376,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

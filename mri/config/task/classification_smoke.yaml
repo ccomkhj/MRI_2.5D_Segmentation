@@ -1,0 +1,37 @@
+extends:
+  - ../preset/classification_train.yaml
+
+data:
+  metadata: data/aligned_v2/metadata.json
+  split_file: data/splits/smoke_3case.yaml
+  modalities: [t2, adc, calc]
+  zero_pad_missing: true
+  seg_pred_dir: predictions/research-smoke/segmentation
+  selection:
+    method: center_crop_pad
+    source: pred
+    jitter: 0
+    min_prob: 0.01
+  depth:
+    strategy: center_crop_pad
+    depth: 4
+  roi:
+    crop_size: 64
+    output_size: 64
+    use_roi: true
+  num_workers: 0
+
+model:
+  name: resnet101
+  params:
+    spatial_dims: 3
+    n_input_channels: 3
+    num_classes: 5
+
+train:
+  batch_size: 1
+  epochs: 1
+
+tracking:
+  wandb:
+    enabled: false

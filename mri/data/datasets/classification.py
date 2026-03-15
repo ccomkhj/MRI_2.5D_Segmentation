@@ -16,6 +16,31 @@ from PIL import Image
 from mri.data.metadata import load_metadata
 
 
+def _case_prediction_dir(seg_pred_dir: Path, case_id: str) -> Path:
+    return seg_pred_dir / case_id
+
+
+def _case_prediction_npz(seg_pred_dir: Path, case_id: str) -> Path:
+    return seg_pred_dir / f"{case_id.replace('/', '_')}.npz"
+
+
+def has_segmentation_predictions(seg_pred_dir: Union[str, Path], case_id: str) -> bool:
+    seg_pred_dir = Path(seg_pred_dir)
+    case_dir = _case_prediction_dir(seg_pred_dir, case_id)
+    if case_dir.is_dir():
+        if (case_dir / "target_prob.npy").exists() and (case_dir / "prostate_prob.npy").exists():
+            return True
+    return _case_prediction_npz(seg_pred_dir, case_id).exists()
+
+
+def find_missing_segmentation_predictions(
+    seg_pred_dir: Union[str, Path],
+    case_ids: List[str],
+) -> List[str]:
+    unique_case_ids = sorted(dict.fromkeys(case_ids))
+    return [case_id for case_id in unique_case_ids if not has_segmentation_predictions(seg_pred_dir, case_id)]
+
+
 class ClassificationDataset(Dataset):
     def __init__(
         self,
@@ -69,7 +94,7 @@ class ClassificationDataset(Dataset):
         return (np.array(img, dtype=np.float32) > 127).astype(np.float32)
 
     def _load_seg_preds(self, case_id: str) -> Dict[str, np.ndarray]:
-        case_dir = self.seg_pred_dir / case_id
+        case_dir = _case_prediction_dir(self.seg_pred_dir, case_id)
         if case_dir.is_dir():
             target_path = case_dir / "target_prob.npy"
             prostate_path = case_dir / "prostate_prob.npy"
@@ -78,7 +103,7 @@ class ClassificationDataset(Dataset):
                     "target": np.load(target_path),
                     "prostate": np.load(prostate_path),
                 }
-        npz_path = self.seg_pred_dir / f"{case_id.replace('/', '_')}.npz"
+        npz_path = _case_prediction_npz(self.seg_pred_dir, case_id)
         if npz_path.exists():
             data = np.load(npz_path)
             return {
@@ -215,8 +240,8 @@ class ClassificationDataset(Dataset):
         case_info = self.meta.cases[case_id]
         num_slices = int(case_info.get("num_slices", 0))
 
-        use_pred = self.selection_source in {"pred"}
-        use_gt = self.selection_source in {"gt", "hybrid"}
+        use_pred = self.selection_source in {"pred", "hybrid"}
+        use_gt = self.selection_source == "gt"
         apply_jitter = self.selection_source == "hybrid"
 
         target_scores = None
@@ -265,7 +290,10 @@ class ClassificationDataset(Dataset):
         volume_t = torch.from_numpy(volume).float()
 
         if self.use_roi and roi_mask_volume is not None:
-            roi_mask_selected = roi_mask_volume[slice_indices]
+            if use_gt:
+                roi_mask_selected = roi_mask_volume
+            else:
+                roi_mask_selected = roi_mask_volume[slice_indices]
             bbox = self._get_roi_bbox(roi_mask_selected)
             volume_t = self._crop_volume(volume_t, bbox)
 

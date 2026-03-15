@@ -1,0 +1,6 @@
+model:
+  name: swin
+  params:
+    in_channels: 3
+    num_classes: 5
+    spatial_dims: 3
