@@ -42,6 +42,48 @@ The pipeline is organized around reusable modules in `mri/`:
 - `mri/inference/`: segmentation/classification inference runners
 - `mri/cli/`: train/infer/sweep/research entrypoints
 
+## Pipeline Flow
+
+```mermaid
+flowchart TD
+    A["Source dataset<br/>`/Users/huijokim/personal/tcia-handler/data/aligned_v2`"]
+    B["Import or sync<br/>`tools/dataset/import_tcia_aligned.py`"]
+    C["Local dataset<br/>`data/aligned_v2`"]
+    D["Generate one dated split<br/>`tools/generate_splits.py`"]
+    E["Shared split file<br/>`data/splits/YYYY-MM-DD.yaml`"]
+
+    F["Segmentation training<br/>`mri/cli/train.py`"]
+    G["Best segmentation checkpoint"]
+    H["Segmentation inference<br/>`mri/cli/infer.py` on `train,val,test`"]
+    I["Segmentation probability maps<br/>`prostate_prob.npy` + `target_prob.npy`"]
+
+    J["Classification training<br/>`mri/cli/train.py`"]
+    K["Best classification checkpoint"]
+    L["Classification inference<br/>`mri/cli/infer.py`"]
+    M["Case-level predictions<br/>`predictions.csv` + summaries"]
+
+    N["End-to-end local runner<br/>`mri/cli/research.py`"]
+    O["Sweep orchestration<br/>`mri/cli/sweep.py`"]
+
+    A --> B --> C --> D --> E
+    E --> F --> G --> H --> I
+    E --> J
+    I --> J --> K --> L --> M
+
+    N -. orchestrates .-> B
+    N -. orchestrates .-> D
+    N -. orchestrates .-> F
+    N -. orchestrates .-> H
+    N -. orchestrates .-> J
+    N -. orchestrates .-> L
+
+    O -. ranks upstream segmentation runs .-> G
+    O -. promotes best run downstream .-> H
+    O -. prepares downstream classification .-> J
+```
+
+The important constraint is structural: segmentation runs first, and classification consumes the selected MRI inputs together with segmentation prediction outputs.
+
 ## Repository Structure
 
 ```text
