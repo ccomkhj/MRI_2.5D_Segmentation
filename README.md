@@ -46,40 +46,26 @@ The pipeline is organized around reusable modules in `mri/`:
 
 ```mermaid
 flowchart TD
-    A["Source dataset<br/>`/Users/huijokim/personal/tcia-handler/data/aligned_v2`"]
+    A["Source dataset"]
     B["Import or sync<br/>`tools/dataset/import_tcia_aligned.py`"]
-    C["Local dataset<br/>`data/aligned_v2`"]
-    D["Generate one dated split<br/>`tools/generate_splits.py`"]
-    E["Shared split file<br/>`data/splits/YYYY-MM-DD.yaml`"]
+    C["Local aligned dataset<br/>`data/aligned_v2`"]
+    D["Shared dated split<br/>`data/splits/YYYY-MM-DD.yaml`"]
+    E["Segmentation stage<br/>train then infer"]
+    F["Segmentation probability maps"]
+    G["Classification stage<br/>train then infer"]
+    H["Predictions, checkpoints, manifests, metrics"]
 
-    F["Segmentation training<br/>`mri/cli/train.py`"]
-    G["Best segmentation checkpoint"]
-    H["Segmentation inference<br/>`mri/cli/infer.py` on `train,val,test`"]
-    I["Segmentation probability maps<br/>`prostate_prob.npy` + `target_prob.npy`"]
+    I["`mri/cli/research.py`<br/>runs the full local pipeline"]
+    J["`mri/cli/sweep.py`<br/>runs config sweeps and downstream promotion"]
 
-    J["Classification training<br/>`mri/cli/train.py`"]
-    K["Best classification checkpoint"]
-    L["Classification inference<br/>`mri/cli/infer.py`"]
-    M["Case-level predictions<br/>`predictions.csv` + summaries"]
+    A --> B --> C --> D --> E --> F --> G --> H
 
-    N["End-to-end local runner<br/>`mri/cli/research.py`"]
-    O["Sweep orchestration<br/>`mri/cli/sweep.py`"]
+    I -. orchestrates .-> B
+    I -. orchestrates .-> E
+    I -. orchestrates .-> G
 
-    A --> B --> C --> D --> E
-    E --> F --> G --> H --> I
-    E --> J
-    I --> J --> K --> L --> M
-
-    N -. orchestrates .-> B
-    N -. orchestrates .-> D
-    N -. orchestrates .-> F
-    N -. orchestrates .-> H
-    N -. orchestrates .-> J
-    N -. orchestrates .-> L
-
-    O -. ranks upstream segmentation runs .-> G
-    O -. promotes best run downstream .-> H
-    O -. prepares downstream classification .-> J
+    J -. compares segmentation runs .-> E
+    J -. promotes best upstream run .-> G
 ```
 
 The important constraint is structural: segmentation runs first, and classification consumes the selected MRI inputs together with segmentation prediction outputs.
