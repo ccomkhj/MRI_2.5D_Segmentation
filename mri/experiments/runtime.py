@@ -166,6 +166,8 @@ def build_run_manifest(
             "split_file": data_cfg.get("split_file"),
             "modalities": data_cfg.get("modalities", []),
             "stack_depth": data_cfg.get("stack_depth"),
+            "require_complete": data_cfg.get("require_complete", False),
+            "require_positive": data_cfg.get("require_positive", False),
             "selection": data_cfg.get("selection", {}),
             "roi": data_cfg.get("roi", {}),
             "seg_pred_dir": data_cfg.get("seg_pred_dir"),
@@ -178,6 +180,7 @@ def build_run_manifest(
         "execution": {
             "command": command,
             "train": train_cfg,
+            "scheduler": cfg.get("scheduler", {}),
             "inference": inference_cfg,
         },
         "tracking": {

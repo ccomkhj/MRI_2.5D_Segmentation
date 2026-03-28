@@ -45,7 +45,7 @@ def _validate_classification_inputs(seg_pred_dir: str | None, case_ids: list[str
 
 
 def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, WeightedRandomSampler
 
     from mri.data.metadata import load_metadata
     from mri.data.index_builders import load_split_file, build_segmentation_index, build_classification_index
@@ -58,6 +58,8 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
 
     if task_name == "segmentation":
         stack_depth = cfg["data"].get("stack_depth", meta.config.get("t2_context_window", 5))
+        require_complete = bool(cfg["data"].get("require_complete", False))
+        require_positive = bool(cfg["data"].get("require_positive", False))
         train_index = build_segmentation_index(meta, splits["train"])
         val_index = build_segmentation_index(meta, splits["val"])
         if len(train_index) == 0:
@@ -71,16 +73,49 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
             metadata_path=cfg["data"]["metadata"],
             samples_index=train_index,
             stack_depth=stack_depth,
+            require_complete=require_complete,
+            require_positive=require_positive,
             normalize=True,
         )
         val_ds = SegmentationDataset(
             metadata_path=cfg["data"]["metadata"],
             samples_index=val_index,
             stack_depth=stack_depth,
+            require_complete=require_complete,
+            require_positive=require_positive,
             normalize=True,
         )
+        if len(train_ds) == 0:
+            raise ValueError("Train split is empty after applying segmentation dataset filters.")
+        if len(val_ds) == 0:
+            raise ValueError("Validation split is empty after applying segmentation dataset filters.")
 
-        train_loader = DataLoader(train_ds, batch_size=cfg["train"]["batch_size"], shuffle=True, num_workers=num_workers)
+        sampler_cfg = cfg["data"].get("train_sampler", {})
+        train_sampler = None
+        train_shuffle = True
+        if sampler_cfg.get("name") == "target_weighted":
+            target_positive_weight = float(sampler_cfg.get("target_positive_weight", 1.0))
+            default_weight = float(sampler_cfg.get("default_weight", 1.0))
+            replacement = bool(sampler_cfg.get("replacement", True))
+            num_samples = int(sampler_cfg.get("num_samples", len(train_ds)))
+            sample_weights = [
+                target_positive_weight if sample.get("has_target", False) else default_weight
+                for sample in train_ds.samples
+            ]
+            train_sampler = WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=num_samples,
+                replacement=replacement,
+            )
+            train_shuffle = False
+
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg["train"]["batch_size"],
+            shuffle=train_shuffle,
+            sampler=train_sampler,
+            num_workers=num_workers,
+        )
         val_loader = DataLoader(val_ds, batch_size=cfg["train"]["batch_size"], shuffle=False, num_workers=num_workers)
         return train_loader, val_loader
 
@@ -150,7 +185,7 @@ def main(argv=None) -> int:
     from mri.experiments.tracking import WandbTracker
     from mri.tasks.segmentation import SegmentationTask
     from mri.tasks.classification import ClassificationTask
-    from mri.training.trainer import Trainer, resolve_device
+    from mri.training.trainer import Trainer, build_scheduler, resolve_device
 
     cfg = load_config(args.config)
     if args.output_dir:
@@ -199,6 +234,12 @@ def main(argv=None) -> int:
         lr=cfg["train"]["lr"],
         weight_decay=cfg["train"].get("weight_decay", 1e-4),
     )
+    scheduler = build_scheduler(
+        cfg,
+        optimizer,
+        steps_per_epoch=len(train_loader),
+        primary_metric_name=task.primary_metric_name(),
+    )
 
     output_dir = Path(cfg["train"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -238,6 +279,7 @@ def main(argv=None) -> int:
         model=model,
         task=task,
         optimizer=optimizer,
+        scheduler=scheduler,
         device=device,
         output_dir=output_dir,
         run_name=run_name,
