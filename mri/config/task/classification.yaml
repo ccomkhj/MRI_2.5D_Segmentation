@@ -1,6 +1,6 @@
 extends:
   - ../preset/classification_train.yaml
-  - ../model/classification/swin.yaml
+  - ../model/classification/resnet101.yaml
 
 data:
   metadata: data/aligned_v2/metadata.json

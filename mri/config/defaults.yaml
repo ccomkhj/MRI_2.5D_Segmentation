@@ -54,6 +54,8 @@ loss:
 
 metrics:
   names: []
+  class_names: []
+  primary_metric_name: null
   segmentation_threshold: 0.5
 
 inference:

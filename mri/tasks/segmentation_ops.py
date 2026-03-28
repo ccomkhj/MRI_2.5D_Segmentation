@@ -2,24 +2,68 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
+
 import numpy as np
 import torch
 import torch.nn as nn
 
 
-def compute_dice_score(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> float:
+def _metric_suffix(class_name: str, class_idx: int) -> str:
+    suffix = re.sub(r"[^0-9a-zA-Z]+", "_", class_name.strip().lower()).strip("_")
+    return suffix or f"class_{class_idx}"
+
+
+def compute_segmentation_metrics(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    threshold: float = 0.5,
+    class_names: Sequence[str] | None = None,
+) -> dict[str, float]:
     pred = torch.sigmoid(pred)
     pred = (pred > threshold).float()
 
     dice_scores = []
+    precision_scores = []
+    recall_scores = []
+    metrics: dict[str, float] = {}
+    resolved_class_names = list(class_names or [])
+    eps = 1e-8
+
     for c in range(pred.shape[1]):
         pred_c = pred[:, c].reshape(-1)
         target_c = target[:, c].reshape(-1)
-        intersection = (pred_c * target_c).sum()
-        dice = (2.0 * intersection) / (pred_c.sum() + target_c.sum() + 1e-8)
-        dice_scores.append(dice.item())
 
-    return float(np.mean(dice_scores))
+        tp = (pred_c * target_c).sum()
+        fp = (pred_c * (1 - target_c)).sum()
+        fn = ((1 - pred_c) * target_c).sum()
+
+        dice = (2.0 * tp) / (2.0 * tp + fp + fn + eps)
+        precision = tp / (tp + fp + eps)
+        recall = tp / (tp + fn + eps)
+
+        dice_scores.append(dice.item())
+        precision_scores.append(precision.item())
+        recall_scores.append(recall.item())
+
+        suffix = _metric_suffix(resolved_class_names[c], c) if c < len(resolved_class_names) else f"class_{c}"
+        metrics[f"dice_{suffix}"] = float(dice.item())
+        metrics[f"precision_{suffix}"] = float(precision.item())
+        metrics[f"recall_{suffix}"] = float(recall.item())
+
+    metrics.update(
+        {
+            "dice": float(np.mean(dice_scores)),
+            "precision": float(np.mean(precision_scores)),
+            "recall": float(np.mean(recall_scores)),
+        }
+    )
+    return metrics
+
+
+def compute_dice_score(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> float:
+    return compute_segmentation_metrics(pred, target, threshold)["dice"]
 
 
 class DiceLoss(nn.Module):

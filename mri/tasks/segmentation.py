@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
 
 from .base import Task
-from .segmentation_ops import DiceBCELoss, DiceLoss, FocalTverskyLoss, compute_dice_score
+from .segmentation_ops import DiceBCELoss, DiceLoss, FocalTverskyLoss, compute_segmentation_metrics
 
 
 class SegmentationTask(Task):
@@ -19,10 +20,14 @@ class SegmentationTask(Task):
         loss_name: str = "dice_bce",
         loss_params: Dict | None = None,
         metric_threshold: float = 0.5,
+        class_names: Sequence[str] | None = None,
+        primary_metric_name: str = "dice",
     ):
         self.loss_name = loss_name
         self.loss_params = loss_params or {}
         self.metric_threshold = metric_threshold
+        self.class_names = tuple(class_names) if class_names else None
+        self._primary_metric_name = primary_metric_name or "dice"
         self.loss_fn = self._build_loss(loss_name, self.loss_params)
 
     def _build_loss(self, loss_name: str, params: Dict) -> nn.Module:
@@ -50,12 +55,13 @@ class SegmentationTask(Task):
         masks = masks.to(device)
         logits = model(images)
         loss = self.loss_fn(logits, masks)
-        dice = compute_dice_score(
+        segmentation_metrics = compute_segmentation_metrics(
             logits.detach().cpu(),
             masks.detach().cpu(),
             threshold=self.metric_threshold,
+            class_names=self.class_names,
         )
-        metrics = {"loss": loss.item(), "dice": dice}
+        metrics = {"loss": loss.item(), **segmentation_metrics}
         return loss, metrics
 
     def validation_step(self, model: torch.nn.Module, batch, device: torch.device) -> Tuple[torch.Tensor, Dict]:
@@ -64,12 +70,13 @@ class SegmentationTask(Task):
         masks = masks.to(device)
         logits = model(images)
         loss = self.loss_fn(logits, masks)
-        dice = compute_dice_score(
+        segmentation_metrics = compute_segmentation_metrics(
             logits.detach().cpu(),
             masks.detach().cpu(),
             threshold=self.metric_threshold,
+            class_names=self.class_names,
         )
-        metrics = {"loss": loss.item(), "dice": dice}
+        metrics = {"loss": loss.item(), **segmentation_metrics}
         return loss, metrics
 
     def aggregate_metrics(self, metrics_list: list[Dict]) -> Dict:
@@ -86,7 +93,7 @@ class SegmentationTask(Task):
         return agg
 
     def primary_metric(self, metrics: Dict) -> float:
-        return metrics.get("dice", 0.0)
+        return metrics.get(self._primary_metric_name, metrics.get("dice", 0.0))
 
     def primary_metric_name(self) -> str:
-        return "dice"
+        return self._primary_metric_name

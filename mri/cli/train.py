@@ -11,23 +11,22 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import torch
-from torch.utils.data import DataLoader
 
-from mri.config.loader import load_config
-from mri.data.metadata import load_metadata
-from mri.data.index_builders import load_split_file, build_segmentation_index, build_classification_index
-from mri.data.datasets.segmentation import SegmentationDataset
-from mri.data.datasets.classification import ClassificationDataset, find_missing_segmentation_predictions
-from mri.models import create_segmentation_model, create_classification_model
-from mri.experiments.runtime import build_run_manifest, finalize_run_manifest, write_json, write_metrics_history, write_yaml
-from mri.experiments.tracking import WandbTracker
-from mri.tasks.segmentation import SegmentationTask
-from mri.tasks.classification import ClassificationTask
-from mri.training.trainer import Trainer, resolve_device
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="MRI unified training CLI")
+    parser.add_argument("--config", required=True, help="Path to YAML config")
+    parser.add_argument("--output_dir", "--output-dir", dest="output_dir", help="Override train.output_dir")
+    parser.add_argument("--run_name", "--run-name", dest="run_name", help="Override experiment.name / generated run name")
+    parser.add_argument("--epochs", type=int, help="Override train.epochs")
+    parser.add_argument("--batch_size", "--batch-size", dest="batch_size", type=int, help="Override train.batch_size")
+    parser.add_argument("--lr", type=float, help="Override train.lr")
+    parser.add_argument("--device", help="Override train.device")
+    return parser
 
 
 def _validate_classification_inputs(seg_pred_dir: str | None, case_ids: list[str], context: str) -> None:
+    from mri.data.datasets.classification import find_missing_segmentation_predictions
+
     if not seg_pred_dir:
         raise ValueError(f"data.seg_pred_dir must be set for {context}.")
 
@@ -46,6 +45,13 @@ def _validate_classification_inputs(seg_pred_dir: str | None, case_ids: list[str
 
 
 def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
+    from torch.utils.data import DataLoader
+
+    from mri.data.metadata import load_metadata
+    from mri.data.index_builders import load_split_file, build_segmentation_index, build_classification_index
+    from mri.data.datasets.segmentation import SegmentationDataset
+    from mri.data.datasets.classification import ClassificationDataset
+
     meta = load_metadata(cfg["data"]["metadata"])
     splits = load_split_file(cfg["data"]["split_file"])
     num_workers = cfg["data"].get("num_workers", 4)
@@ -133,15 +139,18 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="MRI unified training CLI")
-    parser.add_argument("--config", required=True, help="Path to YAML config")
-    parser.add_argument("--output_dir", help="Override train.output_dir")
-    parser.add_argument("--run_name", help="Override experiment.name / generated run name")
-    parser.add_argument("--epochs", type=int, help="Override train.epochs")
-    parser.add_argument("--batch_size", type=int, help="Override train.batch_size")
-    parser.add_argument("--lr", type=float, help="Override train.lr")
-    parser.add_argument("--device", help="Override train.device")
+    parser = build_parser()
     args = parser.parse_args(argv)
+
+    import torch
+
+    from mri.config.loader import load_config
+    from mri.models import create_segmentation_model, create_classification_model
+    from mri.experiments.runtime import build_run_manifest, finalize_run_manifest, write_json, write_metrics_history, write_yaml
+    from mri.experiments.tracking import WandbTracker
+    from mri.tasks.segmentation import SegmentationTask
+    from mri.tasks.classification import ClassificationTask
+    from mri.training.trainer import Trainer, resolve_device
 
     cfg = load_config(args.config)
     if args.output_dir:
@@ -161,6 +170,7 @@ def main(argv=None) -> int:
     cfg["experiment"].setdefault("purpose", task_name)
 
     device = resolve_device(cfg["train"].get("device", "auto"))
+    metrics_cfg = cfg.get("metrics", {})
 
     train_loader, val_loader = _build_dataloaders(cfg, task_name)
 
@@ -169,7 +179,9 @@ def main(argv=None) -> int:
         task = SegmentationTask(
             loss_name=cfg["loss"]["name"],
             loss_params=cfg["loss"].get("params", {}),
-            metric_threshold=cfg.get("metrics", {}).get("segmentation_threshold", 0.5),
+            metric_threshold=metrics_cfg.get("segmentation_threshold", 0.5),
+            class_names=metrics_cfg.get("class_names"),
+            primary_metric_name=metrics_cfg.get("primary_metric_name", "dice"),
         )
     elif task_name == "classification":
         model = create_classification_model(cfg["model"]["name"], **cfg["model"].get("params", {}))

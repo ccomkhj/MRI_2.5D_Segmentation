@@ -60,11 +60,13 @@ Segmentation inference writes:
 
 - `<case_id>/prostate_prob.npy`
 - `<case_id>/target_prob.npy`
+- `<case_id>/overlays/<slice_idx>.png`
 - `<run_name>_inference_summary.json`
 - `<run_name>_inference_manifest.json`
 - `<run_name>_resolved_config.yaml`
 
 The classification dataset accepts either the two-`.npy` case layout or an `.npz` file containing `prostate_prob` and `target_prob`.
+The overlay PNGs are visual inspection outputs: they show the predicted prostate and target masks overlaid on the original T2 slice.
 
 ## Classification Outputs
 

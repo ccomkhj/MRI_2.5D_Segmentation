@@ -30,6 +30,16 @@ def test_classification_smoke_config_loads():
     assert cfg["tracking"]["wandb"]["enabled"] is False
 
 
+def test_classification_config_loads():
+    cfg = load_config("mri/config/task/classification.yaml")
+
+    assert cfg["task"]["name"] == "classification"
+    assert cfg["model"]["name"] == "resnet101"
+    assert cfg["model"]["params"]["n_input_channels"] == 3
+    assert cfg["model"]["params"]["num_classes"] == 5
+    assert cfg["data"]["seg_pred_dir"] == "data/seg_preds"
+
+
 def test_smoke_split_has_one_case_per_split():
     split_path = Path("data/splits/smoke_3case.yaml")
     split = yaml.safe_load(split_path.read_text())

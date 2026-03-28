@@ -1,0 +1,6 @@
+model:
+  name: resnet101
+  params:
+    spatial_dims: 3
+    n_input_channels: 3
+    num_classes: 5

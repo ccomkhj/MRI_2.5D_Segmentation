@@ -8,3 +8,13 @@ data:
   modalities: [t2, adc, calc]
   zero_pad_missing: true
   stack_depth: 5
+
+loss:
+  name: focal_tversky
+  params:
+    class_weights: [1.0, 4.0]
+
+metrics:
+  class_names: [prostate, target]
+  primary_metric_name: dice_target
+  segmentation_threshold: 0.4
