@@ -40,6 +40,31 @@ def test_classification_config_loads():
     assert cfg["data"]["seg_pred_dir"] == "data/seg_preds"
 
 
+def test_segmentation_legacy_target_recipe_767519_loads():
+    cfg = load_config("mri/config/task/segmentation_legacy_target_recipe_767519.yaml")
+
+    assert cfg["task"]["name"] == "segmentation"
+    assert cfg["model"]["name"] == "simple_unet"
+    assert cfg["train"]["batch_size"] == 8
+    assert cfg["train"]["epochs"] == 300
+    assert cfg["train"]["lr"] == 8.0e-06
+
+
+def test_segmentation_followup_767506_weighted_loss_loads():
+    cfg = load_config("mri/config/task/segmentation_followup_767506_precision_weighted_loss_sampler2_lr15.yaml")
+
+    assert cfg["task"]["name"] == "segmentation"
+    assert cfg["data"]["require_positive"] is True
+    assert cfg["data"]["train_sampler"]["name"] == "target_weighted"
+    assert cfg["data"]["train_sampler"]["target_positive_weight"] == 2.0
+    assert cfg["loss"]["name"] == "dice_bce"
+    assert cfg["loss"]["params"]["per_channel_dice"] is True
+    assert cfg["loss"]["params"]["dice_class_weights"] == [1.0, 3.0]
+    assert cfg["loss"]["params"]["bce_pos_weight"] == [1.0, 4.0]
+    assert cfg["train"]["lr"] == 1.5e-05
+    assert cfg["metrics"]["primary_metric_name"] == "precision_target"
+
+
 def test_smoke_split_has_one_case_per_split():
     split_path = Path("data/splits/smoke_3case.yaml")
     split = yaml.safe_load(split_path.read_text())

@@ -8,6 +8,7 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def _metric_suffix(class_name: str, class_idx: int) -> str:
@@ -67,12 +68,43 @@ def compute_dice_score(pred: torch.Tensor, target: torch.Tensor, threshold: floa
 
 
 class DiceLoss(nn.Module):
-    def __init__(self, smooth: float = 1.0) -> None:
+    def __init__(
+        self,
+        smooth: float = 1.0,
+        *,
+        per_channel: bool = False,
+        class_weights: Sequence[float] | None = None,
+    ) -> None:
         super().__init__()
         self.smooth = smooth
+        self.per_channel = per_channel
+        if class_weights is None:
+            self.register_buffer("class_weights", torch.empty(0), persistent=False)
+        else:
+            self.register_buffer(
+                "class_weights",
+                torch.as_tensor(list(class_weights), dtype=torch.float32),
+                persistent=False,
+            )
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         pred = torch.sigmoid(pred)
+        if self.per_channel:
+            losses = []
+            for channel_idx in range(pred.shape[1]):
+                pred_flat = pred[:, channel_idx].reshape(-1)
+                target_flat = target[:, channel_idx].reshape(-1)
+                intersection = (pred_flat * target_flat).sum()
+                dice = (2.0 * intersection + self.smooth) / (
+                    pred_flat.sum() + target_flat.sum() + self.smooth
+                )
+                losses.append(1 - dice)
+            losses_tensor = torch.stack(losses)
+            if self.class_weights.numel() == 0:
+                return losses_tensor.mean()
+            weights = self.class_weights.to(device=pred.device, dtype=pred.dtype)
+            return (losses_tensor * weights).sum() / weights.sum()
+
         pred_flat = pred.reshape(-1)
         target_flat = target.reshape(-1)
         intersection = (pred_flat * target_flat).sum()
@@ -84,16 +116,41 @@ class DiceLoss(nn.Module):
 
 
 class DiceBCELoss(nn.Module):
-    def __init__(self, dice_weight: float = 0.5, bce_weight: float = 0.5) -> None:
+    def __init__(
+        self,
+        dice_weight: float = 0.5,
+        bce_weight: float = 0.5,
+        *,
+        per_channel_dice: bool = False,
+        dice_class_weights: Sequence[float] | None = None,
+        bce_pos_weight: Sequence[float] | None = None,
+    ) -> None:
         super().__init__()
-        self.dice_loss = DiceLoss()
-        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.dice_loss = DiceLoss(
+            per_channel=per_channel_dice,
+            class_weights=dice_class_weights,
+        )
         self.dice_weight = dice_weight
         self.bce_weight = bce_weight
+        if bce_pos_weight is None:
+            self.register_buffer("bce_pos_weight", torch.empty(0), persistent=False)
+        else:
+            self.register_buffer(
+                "bce_pos_weight",
+                torch.as_tensor(list(bce_pos_weight), dtype=torch.float32),
+                persistent=False,
+            )
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         dice = self.dice_loss(pred, target)
-        bce = self.bce_loss(pred, target)
+        pos_weight = None
+        if self.bce_pos_weight.numel() > 0:
+            pos_weight = self.bce_pos_weight.to(device=pred.device, dtype=pred.dtype).view(
+                1,
+                -1,
+                *([1] * max(pred.ndim - 2, 0)),
+            )
+        bce = F.binary_cross_entropy_with_logits(pred, target, pos_weight=pos_weight)
         return self.dice_weight * dice + self.bce_weight * bce
 
 

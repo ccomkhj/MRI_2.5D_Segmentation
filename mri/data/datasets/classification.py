@@ -16,6 +16,12 @@ from PIL import Image
 from mri.data.metadata import load_metadata
 
 
+def _safe_std(value: float) -> float:
+    if value is None or value <= 1e-6:
+        return 1.0
+    return float(value)
+
+
 def _case_prediction_dir(seg_pred_dir: Path, case_id: str) -> Path:
     return seg_pred_dir / case_id
 
@@ -123,7 +129,13 @@ class ClassificationDataset(Dataset):
         }
         for idx, modality in enumerate(self.modalities):
             mean = stats.get(modality, {}).get("mean", 0.0)
-            std = stats.get(modality, {}).get("std", 1.0) or 1.0
+            std = _safe_std(stats.get(modality, {}).get("std", 1.0))
+            if modality in {"adc", "calc"}:
+                present_slices = torch.amax(volume[idx], dim=(-1, -2)) > 0
+                if not bool(torch.any(present_slices)):
+                    continue
+                volume[idx, present_slices] = (volume[idx, present_slices] - mean) / std
+                continue
             volume[idx] = (volume[idx] - mean) / std
         return volume
 

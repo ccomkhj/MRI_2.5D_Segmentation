@@ -12,6 +12,12 @@ from torch.utils.data import Dataset
 from PIL import Image
 
 
+def _safe_std(value: float) -> float:
+    if value is None or value <= 1e-6:
+        return 1.0
+    return float(value)
+
+
 class SegmentationDataset(Dataset):
     def __init__(
         self,
@@ -74,16 +80,20 @@ class SegmentationDataset(Dataset):
             return image / 255.0
 
         t2_mean = self.global_stats["t2"]["mean"]
-        t2_std = self.global_stats["t2"]["std"] or 1.0
+        t2_std = _safe_std(self.global_stats["t2"]["std"])
         image[: self.stack_depth] = (image[: self.stack_depth] - t2_mean) / t2_std
 
-        adc_mean = self.global_stats["adc"]["mean"]
-        adc_std = self.global_stats["adc"]["std"] or 1.0
-        image[self.stack_depth] = (image[self.stack_depth] - adc_mean) / adc_std
+        adc_channel = image[self.stack_depth]
+        if adc_channel.max() > 0:
+            adc_mean = self.global_stats["adc"]["mean"]
+            adc_std = _safe_std(self.global_stats["adc"]["std"])
+            image[self.stack_depth] = (adc_channel - adc_mean) / adc_std
 
-        calc_mean = self.global_stats["calc"]["mean"]
-        calc_std = self.global_stats["calc"]["std"] or 1.0
-        image[self.stack_depth + 1] = (image[self.stack_depth + 1] - calc_mean) / calc_std
+        calc_channel = image[self.stack_depth + 1]
+        if calc_channel.max() > 0:
+            calc_mean = self.global_stats["calc"]["mean"]
+            calc_std = _safe_std(self.global_stats["calc"]["std"])
+            image[self.stack_depth + 1] = (calc_channel - calc_mean) / calc_std
 
         return image
 

@@ -39,6 +39,9 @@ class SegmentationTask(Task):
             return DiceBCELoss(
                 dice_weight=params.get("dice_weight", 0.5),
                 bce_weight=params.get("bce_weight", 0.5),
+                per_channel_dice=bool(params.get("per_channel_dice", False)),
+                dice_class_weights=params.get("dice_class_weights"),
+                bce_pos_weight=params.get("bce_pos_weight"),
             )
         if loss_name == "focal_tversky":
             return FocalTverskyLoss(

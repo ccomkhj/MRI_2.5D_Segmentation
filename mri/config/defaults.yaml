@@ -16,6 +16,8 @@ data:
   modalities: [t2, adc, calc]
   zero_pad_missing: true
   stack_depth: 5
+  require_complete: false
+  require_positive: false
   seg_pred_dir: null
   selection:
     method: center_crop_pad
@@ -50,6 +52,10 @@ train:
 
 loss:
   name: cross_entropy
+  params: {}
+
+scheduler:
+  name: none
   params: {}
 
 metrics:
