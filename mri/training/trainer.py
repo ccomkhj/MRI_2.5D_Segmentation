@@ -174,12 +174,14 @@ class Trainer:
     def _current_lr(self) -> float:
         return float(self.optimizer.param_groups[0]["lr"])
 
-    def _run_epoch(self, loader, train: bool) -> dict:
+    def _run_epoch(self, loader, train: bool, *, epoch: int | None = None) -> dict:
         metrics_list = []
         if train:
             self.model.train()
         else:
             self.model.eval()
+            if epoch is not None:
+                self.task.start_validation_epoch(epoch)
 
         for batch in loader:
             if train:
@@ -194,7 +196,10 @@ class Trainer:
                     _, metrics = self.task.validation_step(self.model, batch, self.device)
             metrics_list.append(metrics)
 
-        return self.task.aggregate_metrics(metrics_list)
+        aggregated = self.task.aggregate_metrics(metrics_list)
+        if not train and epoch is not None:
+            aggregated = self.task.finalize_validation_epoch(aggregated)
+        return aggregated
 
     def fit(self, train_loader, val_loader, epochs: int = 1, tracker=None) -> dict[str, Any]:
         best_metric: Optional[float] = None
@@ -211,8 +216,8 @@ class Trainer:
         for epoch in range(1, epochs + 1):
             lr = self._current_lr()
             logger.info(f"Epoch {epoch}/{epochs} - training")
-            train_metrics = self._run_epoch(train_loader, train=True)
-            val_metrics = self._run_epoch(val_loader, train=False) if val_loader is not None else {}
+            train_metrics = self._run_epoch(train_loader, train=True, epoch=epoch)
+            val_metrics = self._run_epoch(val_loader, train=False, epoch=epoch) if val_loader is not None else {}
             final_train_metrics = train_metrics
             final_val_metrics = val_metrics
 

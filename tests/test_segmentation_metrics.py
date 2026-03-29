@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from mri.tasks.segmentation_ops import DiceBCELoss, compute_segmentation_metrics
+from mri.tasks.segmentation_ops import DiceBCELoss, compute_segmentation_metrics, compute_threshold_sweep_metrics
 
 
 def test_compute_segmentation_metrics_perfect_prediction():
@@ -88,3 +88,37 @@ def test_dice_bce_loss_supports_bce_pos_weight():
     )(logits, target)
 
     assert weighted_loss > baseline_loss
+
+
+def test_threshold_sweep_metrics_find_best_target_threshold():
+    probs = torch.tensor(
+        [
+            [
+                [[0.2, 0.2]],
+                [[0.9, 0.55]],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+    target = torch.tensor(
+        [
+            [
+                [[0.0, 0.0]],
+                [[1.0, 0.0]],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+
+    metrics = compute_threshold_sweep_metrics(
+        probs,
+        target,
+        thresholds=[0.5, 0.6, 0.7],
+        class_names=["prostate", "target"],
+        sweep_class_names=["target"],
+    )
+
+    assert metrics["threshold_sweep_target_best_threshold"] == 0.6
+    assert abs(metrics["threshold_sweep_target_best_precision"] - 1.0) < 1e-6
+    assert abs(metrics["threshold_sweep_target_best_recall"] - 1.0) < 1e-6
+    assert abs(metrics["threshold_sweep_target_best_dice"] - 1.0) < 1e-6

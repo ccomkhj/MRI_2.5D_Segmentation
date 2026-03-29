@@ -63,6 +63,11 @@ metrics:
   class_names: []
   primary_metric_name: null
   segmentation_threshold: 0.5
+  threshold_sweep:
+    enabled: false
+    every: 0
+    thresholds: []
+    class_names: []
 
 inference:
   batch_size: 4

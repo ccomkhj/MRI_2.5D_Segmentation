@@ -51,6 +51,7 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
     from mri.data.index_builders import load_split_file, build_segmentation_index, build_classification_index
     from mri.data.datasets.segmentation import SegmentationDataset
     from mri.data.datasets.classification import ClassificationDataset
+    from mri.transforms import get_transform
 
     meta = load_metadata(cfg["data"]["metadata"])
     splits = load_split_file(cfg["data"]["split_file"])
@@ -60,6 +61,11 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
         stack_depth = cfg["data"].get("stack_depth", meta.config.get("t2_context_window", 5))
         require_complete = bool(cfg["data"].get("require_complete", False))
         require_positive = bool(cfg["data"].get("require_positive", False))
+        augment_cfg = cfg.get("augment", {})
+        train_transform = None
+        transform_builder = get_transform(augment_cfg.get("name"))
+        if transform_builder is not None:
+            train_transform = transform_builder(**augment_cfg.get("params", {}))
         train_index = build_segmentation_index(meta, splits["train"])
         val_index = build_segmentation_index(meta, splits["val"])
         if len(train_index) == 0:
@@ -73,6 +79,7 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
             metadata_path=cfg["data"]["metadata"],
             samples_index=train_index,
             stack_depth=stack_depth,
+            transform=train_transform,
             require_complete=require_complete,
             require_positive=require_positive,
             normalize=True,
@@ -217,6 +224,7 @@ def main(argv=None) -> int:
             metric_threshold=metrics_cfg.get("segmentation_threshold", 0.5),
             class_names=metrics_cfg.get("class_names"),
             primary_metric_name=metrics_cfg.get("primary_metric_name", "dice"),
+            threshold_sweep=metrics_cfg.get("threshold_sweep"),
         )
     elif task_name == "classification":
         model = create_classification_model(cfg["model"]["name"], **cfg["model"].get("params", {}))

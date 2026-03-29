@@ -67,6 +67,145 @@ def compute_dice_score(pred: torch.Tensor, target: torch.Tensor, threshold: floa
     return compute_segmentation_metrics(pred, target, threshold)["dice"]
 
 
+def default_threshold_sweep_thresholds() -> list[float]:
+    return [round(float(t), 2) for t in torch.arange(0.1, 0.95, 0.05).tolist()]
+
+
+def resolve_threshold_sweep_class_indices(
+    *,
+    num_classes: int,
+    class_names: Sequence[str] | None = None,
+    sweep_class_names: Sequence[str | int | float] | None = None,
+) -> list[int]:
+    resolved_names = list(class_names or [f"class_{idx}" for idx in range(num_classes)])
+    requested = list(sweep_class_names or (["target"] if "target" in resolved_names else [num_classes - 1]))
+
+    indices: list[int] = []
+    for item in requested:
+        idx: int | None = None
+        if isinstance(item, (int, float)):
+            idx = int(item)
+        else:
+            try:
+                idx = resolved_names.index(str(item))
+            except ValueError:
+                if str(item).isdigit():
+                    idx = int(str(item))
+        if idx is None or idx < 0 or idx >= num_classes:
+            raise ValueError(f"Unknown threshold sweep class reference: {item!r}")
+        if idx not in indices:
+            indices.append(idx)
+    return indices
+
+
+def initialize_threshold_sweep_stats(
+    *,
+    class_indices: Sequence[int],
+    thresholds: Sequence[float],
+) -> dict[int, dict[str, torch.Tensor]]:
+    stats: dict[int, dict[str, torch.Tensor]] = {}
+    num_thresholds = len(thresholds)
+    for class_idx in class_indices:
+        stats[int(class_idx)] = {
+            "tp": torch.zeros(num_thresholds, dtype=torch.float64),
+            "fp": torch.zeros(num_thresholds, dtype=torch.float64),
+            "fn": torch.zeros(num_thresholds, dtype=torch.float64),
+        }
+    return stats
+
+
+def update_threshold_sweep_stats(
+    stats: dict[int, dict[str, torch.Tensor]],
+    *,
+    probs: torch.Tensor,
+    target: torch.Tensor,
+    thresholds: Sequence[float],
+    class_indices: Sequence[int],
+) -> None:
+    threshold_tensor = torch.as_tensor(list(thresholds), dtype=probs.dtype).view(-1, 1)
+
+    for class_idx in class_indices:
+        probs_flat = probs[:, class_idx].reshape(1, -1)
+        target_flat = target[:, class_idx].reshape(1, -1)
+        pred_binary = probs_flat > threshold_tensor
+        target_binary = target_flat > 0.5
+
+        tp = (pred_binary & target_binary).sum(dim=1, dtype=torch.float64)
+        fp = (pred_binary & ~target_binary).sum(dim=1, dtype=torch.float64)
+        fn = (~pred_binary & target_binary).sum(dim=1, dtype=torch.float64)
+
+        stats[class_idx]["tp"] += tp
+        stats[class_idx]["fp"] += fp
+        stats[class_idx]["fn"] += fn
+
+
+def summarize_threshold_sweep_stats(
+    stats: dict[int, dict[str, torch.Tensor]],
+    *,
+    thresholds: Sequence[float],
+    class_names: Sequence[str] | None = None,
+) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    resolved_names = list(class_names or [])
+    eps = 1e-8
+
+    for class_idx, class_stats in stats.items():
+        tp = class_stats["tp"]
+        fp = class_stats["fp"]
+        fn = class_stats["fn"]
+
+        precision = tp / (tp + fp + eps)
+        recall = tp / (tp + fn + eps)
+        dice = (2.0 * tp) / (2.0 * tp + fp + fn + eps)
+
+        ranked = list(zip(thresholds, dice.tolist(), precision.tolist(), recall.tolist()))
+        best_threshold, best_dice, best_precision, best_recall = max(
+            ranked,
+            key=lambda item: (item[1], item[2], item[3]),
+        )
+
+        class_name = resolved_names[class_idx] if class_idx < len(resolved_names) else f"class_{class_idx}"
+        suffix = _metric_suffix(class_name, class_idx)
+        metrics[f"threshold_sweep_{suffix}_best_threshold"] = float(best_threshold)
+        metrics[f"threshold_sweep_{suffix}_best_dice"] = float(best_dice)
+        metrics[f"threshold_sweep_{suffix}_best_precision"] = float(best_precision)
+        metrics[f"threshold_sweep_{suffix}_best_recall"] = float(best_recall)
+
+    return metrics
+
+
+def compute_threshold_sweep_metrics(
+    probs: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    thresholds: Sequence[float] | None = None,
+    class_names: Sequence[str] | None = None,
+    sweep_class_names: Sequence[str | int | float] | None = None,
+) -> dict[str, float]:
+    resolved_thresholds = list(thresholds or default_threshold_sweep_thresholds())
+    class_indices = resolve_threshold_sweep_class_indices(
+        num_classes=probs.shape[1],
+        class_names=class_names,
+        sweep_class_names=sweep_class_names,
+    )
+    stats = initialize_threshold_sweep_stats(
+        class_indices=class_indices,
+        thresholds=resolved_thresholds,
+    )
+    update_threshold_sweep_stats(
+        stats,
+        probs=probs,
+        target=target,
+        thresholds=resolved_thresholds,
+        class_indices=class_indices,
+    )
+    return summarize_threshold_sweep_stats(
+        stats,
+        thresholds=resolved_thresholds,
+        class_names=class_names,
+    )
+
+
 class DiceLoss(nn.Module):
     def __init__(
         self,

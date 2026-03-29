@@ -18,6 +18,12 @@ class Task:
     def aggregate_metrics(self, metrics_list: list[Dict]) -> Dict:
         return {}
 
+    def start_validation_epoch(self, epoch: int) -> None:
+        return None
+
+    def finalize_validation_epoch(self, metrics: Dict) -> Dict:
+        return metrics
+
     def primary_metric(self, metrics: Dict) -> float:
         return -metrics.get("loss", 0.0)
 

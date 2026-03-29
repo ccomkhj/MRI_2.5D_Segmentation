@@ -7,6 +7,7 @@ Utility scripts live under `tools/`. The modular train and inference path is `mr
 - `preprocessing/`: DICOM, overlay, and metadata preparation helpers
 - `tcia/`: TCIA manifest generation
 - `deployment/`: backup and restore helpers for moving datasets between machines
+- `ssh/`: SSH-based helpers for downloading or copying run artifacts
 - `validation/`: dataset and mask diagnostics
 - `dataset/`: older standalone dataset helpers that are not used by `mri/cli/*`
 
