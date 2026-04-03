@@ -197,6 +197,54 @@ def test_segmentation_matrix_configs_load():
         assert cfg["augment"]["name"] == expected["augment_name"]
 
 
+def test_segmentation_apr03_positive_variants_load():
+    configs = {
+        "mri/config/task/segmentation_apr03_positive_basic_aug.yaml": {
+            "augment.name": "segmentation_2d5_basic",
+            "train.batch_size": 16,
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle.yaml": {
+            "scheduler.name": "onecycle",
+            "train.lr": 3.0e-05,
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_weighted_aug.yaml": {
+            "loss.params.dice_class_weights": [1.0, 1.5],
+            "loss.params.bce_pos_weight": [1.0, 2.0],
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_segresnet.yaml": {
+            "model.name": "segresnet",
+            "train.batch_size": 8,
+        },
+        "mri/config/task/segmentation_apr03_positive_unet.yaml": {
+            "model.name": "unet",
+            "train.batch_size": 8,
+        },
+    }
+
+    for path, expected in configs.items():
+        cfg = load_config(path)
+
+        assert cfg["task"]["name"] == "segmentation"
+        assert cfg["data"]["require_positive"] is True
+        assert cfg["metrics"]["primary_metric_name"] == "precision_target"
+        assert cfg["metrics"]["threshold_sweep"]["enabled"] is True
+        assert cfg["model"]["name"] == expected["model.name"]
+        assert cfg["train"]["batch_size"] == expected["train.batch_size"]
+
+        if "augment.name" in expected:
+            assert cfg["augment"]["name"] == expected["augment.name"]
+        if "scheduler.name" in expected:
+            assert cfg["scheduler"]["name"] == expected["scheduler.name"]
+            assert cfg["train"]["lr"] == expected["train.lr"]
+        if "loss.params.dice_class_weights" in expected:
+            assert cfg["loss"]["params"]["per_channel_dice"] is True
+            assert cfg["loss"]["params"]["dice_class_weights"] == expected["loss.params.dice_class_weights"]
+            assert cfg["loss"]["params"]["bce_pos_weight"] == expected["loss.params.bce_pos_weight"]
+
+
 def test_smoke_split_has_one_case_per_split():
     split_path = Path("data/splits/smoke_3case.yaml")
     split = yaml.safe_load(split_path.read_text())
