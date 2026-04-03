@@ -238,7 +238,101 @@ def test_segmentation_apr03_positive_variants_load():
             assert cfg["augment"]["name"] == expected["augment.name"]
         if "scheduler.name" in expected:
             assert cfg["scheduler"]["name"] == expected["scheduler.name"]
+
+
+def test_segmentation_apr03_positive_onecycle_100_variants_load():
+    configs = {
+        "mri/config/task/segmentation_apr03_positive_onecycle_100.yaml": {
+            "train.epochs": 100,
+            "train.lr": 3.0e-05,
+            "scheduler.name": "onecycle",
+            "metrics.primary_metric_name": "precision_target",
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle_conservative_100.yaml": {
+            "train.epochs": 100,
+            "train.lr": 2.5e-05,
+            "scheduler.name": "onecycle",
+            "scheduler.params.max_lr": 1.2e-04,
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle_basic_aug_100.yaml": {
+            "train.epochs": 100,
+            "augment.name": "segmentation_2d5_basic",
+            "scheduler.name": "onecycle",
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle_sweep_dice_100.yaml": {
+            "train.epochs": 100,
+            "metrics.primary_metric_name": "threshold_sweep_target_best_dice",
+            "metrics.threshold_sweep.every": 1,
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle_stack7_100.yaml": {
+            "train.epochs": 100,
+            "data.stack_depth": 7,
+            "train.batch_size": 12,
+            "train.lr": 2.5e-05,
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_dynunet_100.yaml": {
+            "train.epochs": 100,
+            "train.batch_size": 8,
+            "train.lr": 2.5e-05,
+            "scheduler.name": "onecycle",
+            "scheduler.params.max_lr": 1.2e-04,
+            "model.name": "dynunet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle_moddrop_100.yaml": {
+            "train.epochs": 100,
+            "augment.name": "segmentation_2d5_geometric",
+            "augment.params.adc_dropout_prob": 0.1,
+            "augment.params.calc_dropout_prob": 0.1,
+            "augment.params.aux_pair_dropout_prob": 0.05,
+            "scheduler.name": "onecycle",
+            "model.name": "simple_unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_onecycle_stack7_sweep_dice_100.yaml": {
+            "train.epochs": 100,
+            "data.stack_depth": 7,
+            "train.batch_size": 12,
+            "train.lr": 2.5e-05,
+            "metrics.primary_metric_name": "threshold_sweep_target_best_dice",
+            "metrics.threshold_sweep.every": 1,
+            "model.name": "simple_unet",
+        },
+    }
+
+    for path, expected in configs.items():
+        cfg = load_config(path)
+
+        assert cfg["task"]["name"] == "segmentation"
+        assert cfg["data"]["require_positive"] is True
+        assert cfg["model"]["name"] == expected["model.name"]
+        assert cfg["train"]["epochs"] == expected["train.epochs"]
+        assert cfg["metrics"]["threshold_sweep"]["enabled"] is True
+        assert cfg["metrics"]["threshold_sweep"]["class_names"] == ["target"]
+
+        if "train.lr" in expected:
             assert cfg["train"]["lr"] == expected["train.lr"]
+        if "train.batch_size" in expected:
+            assert cfg["train"]["batch_size"] == expected["train.batch_size"]
+        if "data.stack_depth" in expected:
+            assert cfg["data"]["stack_depth"] == expected["data.stack_depth"]
+        if "augment.name" in expected:
+            assert cfg["augment"]["name"] == expected["augment.name"]
+        if "augment.params.adc_dropout_prob" in expected:
+            assert cfg["augment"]["params"]["adc_dropout_prob"] == expected["augment.params.adc_dropout_prob"]
+            assert cfg["augment"]["params"]["calc_dropout_prob"] == expected["augment.params.calc_dropout_prob"]
+            assert cfg["augment"]["params"]["aux_pair_dropout_prob"] == expected["augment.params.aux_pair_dropout_prob"]
+        if "scheduler.name" in expected:
+            assert cfg["scheduler"]["name"] == expected["scheduler.name"]
+        if "scheduler.params.max_lr" in expected:
+            assert cfg["scheduler"]["params"]["max_lr"] == expected["scheduler.params.max_lr"]
+        if "metrics.primary_metric_name" in expected:
+            assert cfg["metrics"]["primary_metric_name"] == expected["metrics.primary_metric_name"]
+        if "metrics.threshold_sweep.every" in expected:
+            assert cfg["metrics"]["threshold_sweep"]["every"] == expected["metrics.threshold_sweep.every"]
         if "loss.params.dice_class_weights" in expected:
             assert cfg["loss"]["params"]["per_channel_dice"] is True
             assert cfg["loss"]["params"]["dice_class_weights"] == expected["loss.params.dice_class_weights"]

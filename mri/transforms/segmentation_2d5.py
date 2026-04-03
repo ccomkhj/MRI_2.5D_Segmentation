@@ -90,11 +90,40 @@ class RandomGaussianNoise:
         return image, mask
 
 
+class RandomModalityDropout:
+    def __init__(
+        self,
+        adc_prob: float = 0.0,
+        calc_prob: float = 0.0,
+        pair_prob: float = 0.0,
+    ) -> None:
+        self.adc_prob = float(adc_prob)
+        self.calc_prob = float(calc_prob)
+        self.pair_prob = float(pair_prob)
+
+    def __call__(self, image: np.ndarray, mask: np.ndarray | None = None):
+        if image.shape[0] < 2:
+            return image, mask
+
+        if self.pair_prob > 0.0 and random.random() < self.pair_prob:
+            image[-2:] = 0.0
+            return image, mask
+
+        if self.adc_prob > 0.0 and random.random() < self.adc_prob:
+            image[-2] = 0.0
+        if self.calc_prob > 0.0 and random.random() < self.calc_prob:
+            image[-1] = 0.0
+        return image, mask
+
+
 @register_transform("segmentation_2d5_geometric")
 def build_segmentation_2d5_geometric(
     horizontal_flip_prob: float = 0.5,
     vertical_flip_prob: float = 0.5,
     rotate90_prob: float = 0.5,
+    adc_dropout_prob: float = 0.0,
+    calc_dropout_prob: float = 0.0,
+    aux_pair_dropout_prob: float = 0.0,
 ) -> Compose:
     transforms = []
     if horizontal_flip_prob > 0:
@@ -103,6 +132,14 @@ def build_segmentation_2d5_geometric(
         transforms.append(RandomVerticalFlip(prob=vertical_flip_prob))
     if rotate90_prob > 0:
         transforms.append(RandomRotate90(prob=rotate90_prob))
+    if adc_dropout_prob > 0 or calc_dropout_prob > 0 or aux_pair_dropout_prob > 0:
+        transforms.append(
+            RandomModalityDropout(
+                adc_prob=adc_dropout_prob,
+                calc_prob=calc_dropout_prob,
+                pair_prob=aux_pair_dropout_prob,
+            )
+        )
     return Compose(transforms)
 
 
@@ -118,6 +155,9 @@ def build_segmentation_2d5_basic(
     shift_range: Sequence[float] = (-16.0, 16.0),
     noise_std: float = 4.0,
     noise_prob: float = 0.5,
+    adc_dropout_prob: float = 0.0,
+    calc_dropout_prob: float = 0.0,
+    aux_pair_dropout_prob: float = 0.0,
 ) -> Compose:
     transforms = list(
         build_segmentation_2d5_geometric(
@@ -132,4 +172,13 @@ def build_segmentation_2d5_basic(
         transforms.append(RandomIntensityShift(shift_range=(float(shift_range[0]), float(shift_range[1]))))
     if gaussian_noise:
         transforms.append(RandomGaussianNoise(noise_std=noise_std, prob=noise_prob))
+    if adc_dropout_prob > 0 or calc_dropout_prob > 0 or aux_pair_dropout_prob > 0:
+        # Apply dropout after appearance jitter so dropped channels stay zero-valued.
+        transforms.append(
+            RandomModalityDropout(
+                adc_prob=adc_dropout_prob,
+                calc_prob=calc_dropout_prob,
+                pair_prob=aux_pair_dropout_prob,
+            )
+        )
     return Compose(transforms)

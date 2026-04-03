@@ -58,13 +58,31 @@ def _manifest(
     }
 
 
-def test_select_latest_job_rows_prefers_finished_at_and_falls_back_to_created_at(tmp_path: Path):
+def test_select_latest_job_rows_sorts_by_best_precision_target_then_time(tmp_path: Path):
     root = tmp_path / "checkpoints"
-    older_dir = root / "older"
-    fallback_dir = root / "fallback"
-    newest_dir = root / "newest"
+    low_dir = root / "low"
+    high_dir = root / "high"
+    no_metric_old_dir = root / "no-metric-old"
+    no_metric_new_dir = root / "no-metric-new"
 
-    summary = {
+    def segmentation_summary(best_precision_target: float) -> dict:
+        return {
+            "primary_metric_name": "precision_target",
+            "best_metric": best_precision_target,
+            "best_epoch": 3,
+            "best_val_metrics": {
+                "precision_target": best_precision_target,
+                "dice_target": best_precision_target / 2,
+                "recall_target": best_precision_target / 3,
+            },
+            "final_val_metrics": {
+                "precision_target": best_precision_target - 0.01,
+                "dice_target": best_precision_target / 2,
+                "recall_target": best_precision_target / 3,
+            },
+        }
+
+    classification_summary = {
         "primary_metric_name": "macro_f1",
         "best_metric": 0.4,
         "best_epoch": 3,
@@ -73,41 +91,53 @@ def test_select_latest_job_rows_prefers_finished_at_and_falls_back_to_created_at
     }
 
     _write_json(
-        older_dir / "run_manifest.json",
+        low_dir / "run_manifest.json",
         _manifest(
-            older_dir,
-            run_name="older",
+            low_dir,
+            run_name="low",
+            task="segmentation",
             created_at="2026-03-29T10:00:00+00:00",
             finished_at="2026-03-29T11:00:00+00:00",
-            summary=summary,
+            summary=segmentation_summary(0.22),
         ),
     )
     _write_json(
-        fallback_dir / "run_manifest.json",
+        high_dir / "run_manifest.json",
         _manifest(
-            fallback_dir,
-            run_name="fallback",
-            created_at="2026-03-29T12:30:00+00:00",
-            finished_at=None,
-            summary=summary,
-        ),
-    )
-    _write_json(
-        newest_dir / "run_manifest.json",
-        _manifest(
-            newest_dir,
-            run_name="newest",
+            high_dir,
+            run_name="high",
+            task="segmentation",
             created_at="2026-03-29T09:00:00+00:00",
+            finished_at="2026-03-29T10:00:00+00:00",
+            summary=segmentation_summary(0.40),
+        ),
+    )
+    _write_json(
+        no_metric_old_dir / "run_manifest.json",
+        _manifest(
+            no_metric_old_dir,
+            run_name="no-metric-old",
+            created_at="2026-03-29T12:00:00+00:00",
+            finished_at="2026-03-29T12:30:00+00:00",
+            summary=classification_summary,
+        ),
+    )
+    _write_json(
+        no_metric_new_dir / "run_manifest.json",
+        _manifest(
+            no_metric_new_dir,
+            run_name="no-metric-new",
+            created_at="2026-03-29T12:45:00+00:00",
             finished_at="2026-03-29T13:00:00+00:00",
-            summary=summary,
+            summary=classification_summary,
         ),
     )
 
     manifests = load_training_run_manifests(root)
-    rows, skipped_count = select_latest_job_rows(manifests, latest_n=2)
+    rows, skipped_count = select_latest_job_rows(manifests, latest_n=4)
 
     assert skipped_count == 0
-    assert [row["run_name"] for row in rows] == ["newest", "fallback"]
+    assert [row["run_name"] for row in rows] == ["high", "low", "no-metric-new", "no-metric-old"]
 
 
 def test_filters_inference_and_metricless_runs(tmp_path: Path):
@@ -271,9 +301,10 @@ def test_rendered_html_contains_task_specific_metrics_and_links(tmp_path: Path):
     assert "Skipped jobs" in html
     assert "classification-run" in html
     assert "segmentation-run" in html
+    assert "Top n: 10 | Sort rule: best val/precision_target descending, fallback to finished_at then created_at" in html
+    assert "Best val/precision_target" in html
     assert "Best val/acc" in html
     assert "Best val/macro_f1" in html
-    assert "Best val/precision_target" in html
     assert "Best val/dice_target" in html
     assert "Best val/recall_target" in html
     assert "file://" in html

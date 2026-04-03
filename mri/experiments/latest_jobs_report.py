@@ -181,7 +181,7 @@ def _row_sort_key(row: dict[str, Any]) -> tuple[float, str]:
 
 
 def select_latest_job_rows(manifests: Sequence[dict[str, Any]], latest_n: int) -> tuple[list[dict[str, Any]], int]:
-    """Extract, filter, and sort the latest report rows."""
+    """Extract, filter, and sort report rows by best val/precision_target."""
     rows: list[dict[str, Any]] = []
     skipped_count = 0
 
@@ -192,7 +192,14 @@ def select_latest_job_rows(manifests: Sequence[dict[str, Any]], latest_n: int) -
             continue
         rows.append(row)
 
-    rows.sort(key=_row_sort_key, reverse=True)
+    rows.sort(
+        key=lambda row: (
+            row.get("best_precision_target") is not None,
+            row.get("best_precision_target") if row.get("best_precision_target") is not None else float("-inf"),
+            *_row_sort_key(row),
+        ),
+        reverse=True,
+    )
     return rows[:latest_n], skipped_count
 
 
@@ -267,6 +274,7 @@ def _overview_rows(rows: Sequence[dict[str, Any]]) -> list[str]:
             f"<td>{_format_text(row.get('primary_metric_name'))}</td>"
             f"<td>{_format_metric(row.get('best_metric'))}</td>"
             f"<td>{_format_text(row.get('best_epoch'))}</td>"
+            f"<td>{_format_metric(row.get('best_precision_target'))}</td>"
             f"<td>{_render_link('config', row.get('config_path'))}</td>"
             f"<td>{_render_link_group(row)}</td>"
             "</tr>"
@@ -362,12 +370,13 @@ def render_latest_jobs_html(
             "Primary metric",
             "Best metric",
             "Best epoch",
+            "Best val/precision_target",
             "Config",
             "Artifacts",
         ),
         rows=_overview_rows(rows),
         empty_message="No training jobs with usable validation metrics were found.",
-        colspan=11,
+        colspan=12,
     )
     classification_table = _render_table(
         headers=(
@@ -602,7 +611,7 @@ def render_latest_jobs_html(
       <h1>Latest Training Jobs Report</h1>
       <p>Generated at: {escape(generated_at)}</p>
       <p>Report root: {escape(str(root.resolve()))}</p>
-      <p>Latest n: {latest_n} | Sort rule: finished_at descending, fallback to created_at</p>
+      <p>Top n: {latest_n} | Sort rule: best val/precision_target descending, fallback to finished_at then created_at</p>
     </section>
 
     <section class="stats-grid">
@@ -610,14 +619,14 @@ def render_latest_jobs_html(
     </section>
 
     <section class="section">
-      <h2>Latest Jobs</h2>
-      <p>Overview of the latest training jobs with usable validation metrics.</p>
+      <h2>Ranked Jobs</h2>
+      <p>Overview of the selected training jobs ranked by best val/precision_target.</p>
       {overview_table}
     </section>
 
     <section class="section">
       <h2>Classification Metrics</h2>
-      <p>Validation accuracy and macro-F1 for included classification jobs.</p>
+      <p>Validation accuracy and macro-F1 for included classification jobs after precision_target ranking.</p>
       {classification_table}
     </section>
 
