@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from mri.config.loader import load_config
-from mri.experiments.latest_jobs_report import generate_latest_jobs_report
+from mri.experiments.latest_jobs_report import generate_best_jobs_report, generate_latest_jobs_report
 from mri.experiments.runtime import utc_now_iso, write_json, write_yaml
 
 
@@ -64,6 +64,51 @@ class Recipe:
         weight_alias = {"none": "w0", "gentle": "w1", "light": "w2"}[self.weighting]
         sched_alias = {"standard": "std", "conservative": "cons"}[self.scheduler]
         return f"{model_alias}-s{self.stack_depth}-{primary_alias}-{mod_alias}-{weight_alias}-{sched_alias}"
+
+
+EXPLOITATION_SLOTS_PER_FAMILY = 3
+EXPLORATION_SLOTS_PER_WAVE = 6
+RECIPES_PER_WAVE = EXPLOITATION_SLOTS_PER_FAMILY * 2 + EXPLORATION_SLOTS_PER_WAVE
+EXPLORATION_METRIC_WEIGHTS = {
+    "best_precision_target": 0.45,
+    "best_threshold_sweep_target_best_dice": 0.45,
+    "best_dice_target": 0.10,
+}
+EXPLORATION_SINGLE_FIELDS = (
+    "model",
+    "stack_depth",
+    "primary",
+    "moddrop",
+    "weighting",
+    "scheduler",
+)
+EXPLORATION_PAIR_FIELDS = (
+    ("model", "stack_depth"),
+    ("model", "primary"),
+    ("model", "scheduler"),
+    ("moddrop", "weighting"),
+)
+MODDROP_LEVELS = ("none", "gentle", "strong")
+WEIGHTING_LEVELS = ("none", "gentle", "light")
+SIMPLE_UNET_SCHEDULERS = ("standard", "conservative")
+
+PRECISION_FAMILY_BASE = Recipe(
+    model="simple_unet",
+    stack_depth=5,
+    primary="precision",
+    moddrop="gentle",
+    weighting="gentle",
+    scheduler="standard",
+)
+
+SWEEP_FAMILY_BASE = Recipe(
+    model="dynunet",
+    stack_depth=7,
+    primary="sweep",
+    moddrop="gentle",
+    weighting="gentle",
+    scheduler="conservative",
+)
 
 
 def _log(message: str) -> None:
@@ -295,12 +340,18 @@ def _job_row(job_id: str) -> dict[str, str]:
 
 
 def _job_detail(job_id: str) -> dict[str, str]:
-    completed = _run_command(["scontrol", "show", "job", "-o", job_id])
+    try:
+        completed = _run_command(["scontrol", "show", "job", "-o", job_id])
+    except subprocess.CalledProcessError:
+        return {}
     return _parse_key_value_line(completed.stdout)
 
 
 def _node_detail(node_name: str) -> dict[str, str]:
-    completed = _run_command(["scontrol", "show", "node", "-o", node_name])
+    try:
+        completed = _run_command(["scontrol", "show", "node", "-o", node_name])
+    except subprocess.CalledProcessError:
+        return {}
     return _parse_key_value_line(completed.stdout)
 
 
@@ -380,15 +431,336 @@ def _load_run_result(run_name: str) -> dict[str, Any] | None:
     }
 
 
-def _first_wave_recipes() -> list[Recipe]:
-    return [
-        Recipe("simple_unet", 7, "sweep", "gentle", "none", "standard"),
-        Recipe("simple_unet", 7, "sweep", "gentle", "gentle", "standard"),
-        Recipe("simple_unet", 5, "precision", "gentle", "gentle", "standard"),
-        Recipe("simple_unet", 7, "sweep", "none", "none", "conservative"),
-        Recipe("dynunet", 7, "sweep", "gentle", "none", "conservative"),
-        Recipe("dynunet", 7, "sweep", "gentle", "gentle", "conservative"),
+def _recipe_from_fields(fields: dict[str, Any]) -> Recipe:
+    return Recipe(
+        model=str(fields["model"]),
+        stack_depth=int(fields["stack_depth"]),
+        primary=str(fields["primary"]),
+        moddrop=str(fields["moddrop"]),
+        weighting=str(fields["weighting"]),
+        scheduler=str(fields["scheduler"]),
+    )
+
+
+def _matches_precision_family(recipe: Recipe) -> bool:
+    return recipe.model == "simple_unet" and recipe.stack_depth == 5 and recipe.primary == "precision"
+
+
+def _matches_sweep_family(recipe: Recipe) -> bool:
+    return recipe.model == "dynunet" and recipe.stack_depth == 7 and recipe.primary == "sweep"
+
+
+def _result_sort_key(item: dict[str, Any], mode: str) -> tuple[float, float, float]:
+    if mode == "precision":
+        return (
+            item.get("best_precision_target") or float("-inf"),
+            item.get("best_dice_target") or float("-inf"),
+            item.get("best_threshold_sweep_target_best_dice") or float("-inf"),
+        )
+    return (
+        item.get("best_threshold_sweep_target_best_dice") or float("-inf"),
+        item.get("best_precision_target") or float("-inf"),
+        item.get("best_dice_target") or float("-inf"),
+    )
+
+
+def _select_family_seed_recipe(
+    results: list[dict[str, Any]],
+    *,
+    family_matcher: Any,
+    mode: str,
+    fallback: Recipe,
+) -> Recipe:
+    matching: list[tuple[dict[str, Any], Recipe]] = []
+    for row in results:
+        fields = row.get("recipe", {}).get("fields")
+        if not fields:
+            continue
+        recipe = _recipe_from_fields(fields)
+        if family_matcher(recipe):
+            matching.append((row, recipe))
+
+    if not matching:
+        return fallback
+
+    ranked = sorted(matching, key=lambda item: _result_sort_key(item[0], mode), reverse=True)
+    return ranked[0][1]
+
+
+def _completed_wave_metric_maxima(results: list[dict[str, Any]]) -> dict[str, float]:
+    return {
+        metric_name: max((float(item.get(metric_name) or 0.0) for item in results), default=0.0)
+        for metric_name in EXPLORATION_METRIC_WEIGHTS
+    }
+
+
+def _blended_result_score(item: dict[str, Any], metric_maxima: dict[str, float]) -> float:
+    weighted_total = 0.0
+    total_weight = 0.0
+    for metric_name, weight in EXPLORATION_METRIC_WEIGHTS.items():
+        maximum = metric_maxima.get(metric_name) or 0.0
+        if maximum <= 0.0:
+            continue
+        value = float(item.get(metric_name) or 0.0)
+        weighted_total += weight * (value / maximum)
+        total_weight += weight
+    if total_weight <= 0.0:
+        return 0.0
+    return weighted_total / total_weight
+
+
+def _exploration_priors(results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not results:
+        return {
+            "default": 0.0,
+            "single": {field: {} for field in EXPLORATION_SINGLE_FIELDS},
+            "pair": {pair: {} for pair in EXPLORATION_PAIR_FIELDS},
+        }
+
+    metric_maxima = _completed_wave_metric_maxima(results)
+    single_buckets = {field: {} for field in EXPLORATION_SINGLE_FIELDS}
+    pair_buckets = {pair: {} for pair in EXPLORATION_PAIR_FIELDS}
+    all_scores: list[float] = []
+
+    for row in results:
+        fields = row.get("recipe", {}).get("fields")
+        if not fields:
+            continue
+        recipe = _recipe_from_fields(fields)
+        score = _blended_result_score(row, metric_maxima)
+        all_scores.append(score)
+
+        for field in EXPLORATION_SINGLE_FIELDS:
+            value = getattr(recipe, field)
+            single_buckets[field].setdefault(value, []).append(score)
+
+        for left, right in EXPLORATION_PAIR_FIELDS:
+            pair_key = (getattr(recipe, left), getattr(recipe, right))
+            pair_buckets[(left, right)].setdefault(pair_key, []).append(score)
+
+    default_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
+    return {
+        "default": default_score,
+        "single": {
+            field: {value: sum(scores) / len(scores) for value, scores in buckets.items()}
+            for field, buckets in single_buckets.items()
+        },
+        "pair": {
+            pair: {value: sum(scores) / len(scores) for value, scores in buckets.items()}
+            for pair, buckets in pair_buckets.items()
+        },
+    }
+
+
+def _exploration_prior_score(recipe: Recipe, priors: dict[str, Any]) -> float:
+    scores: list[float] = []
+    default_score = float(priors.get("default") or 0.0)
+    single_priors = priors.get("single", {})
+    pair_priors = priors.get("pair", {})
+
+    for field in EXPLORATION_SINGLE_FIELDS:
+        field_priors = single_priors.get(field, {})
+        scores.append(float(field_priors.get(getattr(recipe, field), default_score)))
+
+    for left, right in EXPLORATION_PAIR_FIELDS:
+        pair_key = (getattr(recipe, left), getattr(recipe, right))
+        field_priors = pair_priors.get((left, right), {})
+        scores.append(float(field_priors.get(pair_key, default_score)))
+
+    if not scores:
+        return default_score
+    return sum(scores) / len(scores)
+
+
+def _unique_recipe_candidates(candidates: list[Recipe | None]) -> list[Recipe]:
+    unique: list[Recipe] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if candidate.key() in seen:
+            continue
+        unique.append(candidate)
+        seen.add(candidate.key())
+    return unique
+
+
+def _choose_unused_recipes(candidates: list[Recipe], blocked_keys: set[str], limit: int) -> list[Recipe]:
+    selected: list[Recipe] = []
+    for candidate in candidates:
+        if candidate.key() in blocked_keys:
+            continue
+        selected.append(candidate)
+        blocked_keys.add(candidate.key())
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _precision_family_candidates(seed: Recipe) -> list[Recipe]:
+    anchor = replace(seed, model="simple_unet", stack_depth=5, primary="precision")
+    return _unique_recipe_candidates(
+        [
+            anchor,
+            PRECISION_FAMILY_BASE,
+            replace(anchor, scheduler="conservative"),
+            replace(anchor, weighting=_next_weighting(anchor.weighting)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop), weighting=_next_weighting(anchor.weighting)),
+            replace(PRECISION_FAMILY_BASE, scheduler="conservative"),
+            replace(PRECISION_FAMILY_BASE, weighting="light"),
+            replace(PRECISION_FAMILY_BASE, moddrop="strong"),
+            replace(PRECISION_FAMILY_BASE, moddrop="strong", weighting="light"),
+            replace(PRECISION_FAMILY_BASE, weighting="none"),
+            replace(PRECISION_FAMILY_BASE, moddrop="none"),
+            *[
+                Recipe("simple_unet", 5, "precision", moddrop, weighting, scheduler)
+                for scheduler in SIMPLE_UNET_SCHEDULERS
+                for moddrop in MODDROP_LEVELS
+                for weighting in WEIGHTING_LEVELS
+            ],
+        ]
+    )
+
+
+def _sweep_family_candidates(seed: Recipe) -> list[Recipe]:
+    anchor = replace(seed, model="dynunet", stack_depth=7, primary="sweep", scheduler="conservative")
+    return _unique_recipe_candidates(
+        [
+            anchor,
+            SWEEP_FAMILY_BASE,
+            replace(anchor, weighting=_next_weighting(anchor.weighting)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop), weighting=_next_weighting(anchor.weighting)),
+            replace(SWEEP_FAMILY_BASE, weighting="none"),
+            replace(SWEEP_FAMILY_BASE, weighting="light"),
+            replace(SWEEP_FAMILY_BASE, moddrop="strong"),
+            replace(SWEEP_FAMILY_BASE, moddrop="strong", weighting="gentle"),
+            replace(SWEEP_FAMILY_BASE, moddrop="strong", weighting="light"),
+            *[
+                Recipe("dynunet", 7, "sweep", moddrop, weighting, "conservative")
+                for moddrop in MODDROP_LEVELS
+                for weighting in WEIGHTING_LEVELS
+            ],
+        ]
+    )
+
+
+def _exploration_recipe_pool() -> list[Recipe]:
+    pool: list[Recipe] = []
+    for scheduler in SIMPLE_UNET_SCHEDULERS:
+        for stack_depth in (5, 7):
+            for primary in ("precision", "sweep"):
+                for moddrop in MODDROP_LEVELS:
+                    for weighting in WEIGHTING_LEVELS:
+                        pool.append(Recipe("simple_unet", stack_depth, primary, moddrop, weighting, scheduler))
+
+    for stack_depth in (5, 7):
+        for primary in ("precision", "sweep"):
+            for moddrop in MODDROP_LEVELS:
+                for weighting in WEIGHTING_LEVELS:
+                    pool.append(Recipe("dynunet", stack_depth, primary, moddrop, weighting, "conservative"))
+
+    unique = _unique_recipe_candidates(pool)
+    filtered = [recipe for recipe in unique if not _matches_precision_family(recipe) and not _matches_sweep_family(recipe)]
+    return sorted(filtered, key=lambda recipe: recipe.slug())
+
+
+def _recipe_distance(left: Recipe, right: Recipe) -> int:
+    return sum(
+        [
+            left.model != right.model,
+            left.stack_depth != right.stack_depth,
+            left.primary != right.primary,
+            left.moddrop != right.moddrop,
+            left.weighting != right.weighting,
+            left.scheduler != right.scheduler,
+        ]
+    )
+
+
+def _select_exploration_recipes(
+    *,
+    blocked_keys: set[str],
+    reference_recipes: list[Recipe],
+    wave_results: list[dict[str, Any]],
+    limit: int,
+) -> list[Recipe]:
+    priors = _exploration_priors(wave_results)
+    pool = [
+        candidate
+        for candidate in _exploration_recipe_pool()
+        if candidate.key() not in blocked_keys
+        and not _matches_precision_family(candidate)
+        and not _matches_sweep_family(candidate)
     ]
+
+    selected: list[Recipe] = []
+    while pool and len(selected) < limit:
+        refs = reference_recipes + selected
+        best = max(
+            pool,
+            key=lambda candidate: (
+                min(_recipe_distance(candidate, ref) for ref in refs) if refs else 0,
+                _exploration_prior_score(candidate, priors),
+                sum(_recipe_distance(candidate, ref) for ref in refs),
+                candidate.model == "dynunet",
+                candidate.primary == "precision",
+                candidate.slug(),
+            ),
+        )
+        selected.append(best)
+        blocked_keys.add(best.key())
+        pool.remove(best)
+    return selected
+
+
+def _strategy_wave_recipes(
+    *,
+    prior_recipe_keys: set[str],
+    precision_seed: Recipe,
+    sweep_seed: Recipe,
+    wave_results: list[dict[str, Any]] | None = None,
+) -> list[Recipe]:
+    selected_keys = set(prior_recipe_keys)
+    selected: list[Recipe] = []
+    wave_results = wave_results or []
+
+    selected.extend(
+        _choose_unused_recipes(
+            _precision_family_candidates(precision_seed),
+            selected_keys,
+            EXPLOITATION_SLOTS_PER_FAMILY,
+        )
+    )
+    selected.extend(
+        _choose_unused_recipes(
+            _sweep_family_candidates(sweep_seed),
+            selected_keys,
+            EXPLOITATION_SLOTS_PER_FAMILY,
+        )
+    )
+    selected.extend(
+        _select_exploration_recipes(
+            blocked_keys=selected_keys,
+            reference_recipes=[precision_seed, sweep_seed, *selected],
+            wave_results=wave_results,
+            limit=EXPLORATION_SLOTS_PER_WAVE,
+        )
+    )
+
+    if len(selected) < RECIPES_PER_WAVE:
+        raise RuntimeError(f"Could not assemble {RECIPES_PER_WAVE} unique recipes for the wave.")
+    return selected[:RECIPES_PER_WAVE]
+
+
+def _first_wave_recipes() -> list[Recipe]:
+    return _strategy_wave_recipes(
+        prior_recipe_keys=set(),
+        precision_seed=PRECISION_FAMILY_BASE,
+        sweep_seed=SWEEP_FAMILY_BASE,
+        wave_results=[],
+    )
 
 
 def _next_moddrop(level: str) -> str:
@@ -399,85 +771,10 @@ def _next_weighting(level: str) -> str:
     return {"none": "gentle", "gentle": "light", "light": "light"}[level]
 
 
-def _promote_stack_depth(recipe: Recipe) -> Recipe | None:
-    if recipe.stack_depth >= 7:
-        return None
-    return replace(recipe, stack_depth=7, primary="sweep")
-
-
-def _flip_primary(recipe: Recipe) -> Recipe:
-    primary = "sweep" if recipe.primary == "precision" else "precision"
-    return replace(recipe, primary=primary)
-
-
-def _flip_scheduler(recipe: Recipe) -> Recipe | None:
-    if recipe.model != "simple_unet":
-        return None
-    scheduler = "conservative" if recipe.scheduler == "standard" else "standard"
-    return replace(recipe, scheduler=scheduler)
-
-
-def _mutation_candidates(recipe: Recipe, focus: str) -> list[Recipe | None]:
-    stronger_moddrop = replace(recipe, moddrop=_next_moddrop(recipe.moddrop))
-    stronger_weighting = replace(recipe, weighting=_next_weighting(recipe.weighting))
-    combined = replace(
-        recipe,
-        moddrop=_next_moddrop(recipe.moddrop),
-        weighting=_next_weighting(recipe.weighting),
-    )
-
-    if focus == "precision":
-        return [
-            stronger_moddrop,
-            stronger_weighting,
-            combined,
-            _flip_scheduler(recipe),
-            _promote_stack_depth(recipe),
-            _flip_primary(recipe),
-        ]
-
-    return [
-        stronger_weighting,
-        stronger_moddrop,
-        combined,
-        _flip_primary(recipe),
-        _flip_scheduler(recipe),
-        _promote_stack_depth(recipe),
-    ]
-
-
-def _fallback_recipes() -> list[Recipe]:
-    return [
-        Recipe("simple_unet", 7, "sweep", "strong", "gentle", "standard"),
-        Recipe("simple_unet", 7, "sweep", "gentle", "light", "standard"),
-        Recipe("simple_unet", 5, "precision", "gentle", "light", "standard"),
-        Recipe("simple_unet", 7, "precision", "gentle", "gentle", "standard"),
-        Recipe("simple_unet", 7, "sweep", "strong", "none", "conservative"),
-        Recipe("dynunet", 7, "sweep", "strong", "gentle", "conservative"),
-        Recipe("dynunet", 7, "precision", "gentle", "gentle", "conservative"),
-        Recipe("dynunet", 7, "sweep", "strong", "light", "conservative"),
-        Recipe("dynunet", 5, "precision", "gentle", "gentle", "conservative"),
-        Recipe("simple_unet", 7, "precision", "strong", "gentle", "conservative"),
-    ]
-
-
 def _select_seed(results: list[dict[str, Any]], mode: str, used_recipe_keys: set[str]) -> dict[str, Any] | None:
     if not results:
         return None
-    if mode == "precision":
-        key_fn = lambda item: (
-            item.get("best_precision_target") or float("-inf"),
-            item.get("best_dice_target") or float("-inf"),
-            item.get("best_threshold_sweep_target_best_dice") or float("-inf"),
-        )
-    else:
-        key_fn = lambda item: (
-            item.get("best_threshold_sweep_target_best_dice") or float("-inf"),
-            item.get("best_precision_target") or float("-inf"),
-            item.get("best_dice_target") or float("-inf"),
-        )
-
-    ranked = sorted(results, key=key_fn, reverse=True)
+    ranked = sorted(results, key=lambda item: _result_sort_key(item, mode), reverse=True)
     for row in ranked:
         recipe_key = row.get("recipe", {}).get("key")
         if recipe_key and recipe_key not in used_recipe_keys:
@@ -489,43 +786,24 @@ def _next_wave_recipes(completed_wave: dict[str, Any], prior_recipe_keys: set[st
     results = [run["result"] for run in completed_wave["runs"] if run.get("result")]
     if not results:
         raise RuntimeError("No completed results found for wave; cannot build next wave.")
-
-    selected: list[Recipe] = []
-    selected_keys = set(prior_recipe_keys)
-    seed_recipe_keys: set[str] = set()
-
-    precision_seed = _select_seed(results, "precision", seed_recipe_keys)
-    if precision_seed is not None:
-        seed_recipe_keys.add(precision_seed["recipe"]["key"])
-    sweep_seed = _select_seed(results, "sweep", seed_recipe_keys)
-
-    for focus, seed in (("precision", precision_seed), ("sweep", sweep_seed)):
-        if seed is None:
-            continue
-        recipe = Recipe(**seed["recipe"]["fields"])
-        for candidate in _mutation_candidates(recipe, focus):
-            if candidate is None:
-                continue
-            if candidate.key() in selected_keys:
-                continue
-            selected.append(candidate)
-            selected_keys.add(candidate.key())
-            if len(selected) >= 6:
-                return selected[:6]
-            if sum(1 for item in selected if item.model == recipe.model) >= 3:
-                break
-
-    for candidate in _fallback_recipes():
-        if candidate.key() in selected_keys:
-            continue
-        selected.append(candidate)
-        selected_keys.add(candidate.key())
-        if len(selected) >= 6:
-            break
-
-    if len(selected) < 6:
-        raise RuntimeError("Could not assemble six unique recipes for the next wave.")
-    return selected[:6]
+    precision_seed = _select_family_seed_recipe(
+        results,
+        family_matcher=_matches_precision_family,
+        mode="precision",
+        fallback=PRECISION_FAMILY_BASE,
+    )
+    sweep_seed = _select_family_seed_recipe(
+        results,
+        family_matcher=_matches_sweep_family,
+        mode="sweep",
+        fallback=SWEEP_FAMILY_BASE,
+    )
+    return _strategy_wave_recipes(
+        prior_recipe_keys=prior_recipe_keys,
+        precision_seed=precision_seed,
+        sweep_seed=sweep_seed,
+        wave_results=results,
+    )
 
 
 def _run_name_for(recipe: Recipe, campaign_slug: str, wave_index: int, slot_index: int) -> str:
@@ -764,6 +1042,7 @@ def _init_state(campaign_slug: str, campaign_dir: Path, wave_count: int, poll_se
         "waves": [first_wave],
         "reports": {
             "latest_jobs_html": str((PROJECT_ROOT / "checkpoints" / "reports" / "latest_jobs.html").resolve()),
+            "best_jobs_html": str((PROJECT_ROOT / "checkpoints" / "reports" / "best_jobs.html").resolve()),
         },
         "status": "running",
     }
@@ -777,7 +1056,13 @@ def _ensure_next_wave(state: dict[str, Any], campaign_dir: Path) -> None:
         return
 
     next_wave_index = len(state["waves"]) + 1
-    recipes = _next_wave_recipes(last_wave, _recipe_keys_from_state(state))
+    try:
+        recipes = _next_wave_recipes(last_wave, _recipe_keys_from_state(state))
+    except RuntimeError as exc:
+        state["wave_count"] = len(state["waves"])
+        state["stop_reason"] = str(exc)
+        _log(f"No additional wave prepared: {exc}")
+        return
     next_wave = {
         "wave_index": next_wave_index,
         "status": "pending_submission",
@@ -815,9 +1100,43 @@ def _update_wave(wave: dict[str, Any], max_retries: int, configure_timeout_secon
         _log(f"Wave {wave['wave_index']} completed with summary {wave['summary']}")
 
 
-def _refresh_report(latest_n: int) -> None:
-    output_path = generate_latest_jobs_report(PROJECT_ROOT / "checkpoints", latest_n=latest_n)
-    _log(f"Updated latest jobs report at {output_path}")
+def _refresh_reports(state: dict[str, Any], latest_n: int) -> None:
+    reports = state.setdefault("reports", {})
+    latest_path = generate_latest_jobs_report(
+        PROJECT_ROOT / "checkpoints",
+        output_path=Path(reports.get("latest_jobs_html") or (PROJECT_ROOT / "checkpoints" / "reports" / "latest_jobs.html")),
+        latest_n=latest_n,
+    )
+    reports["latest_jobs_html"] = str(latest_path)
+    _log(f"Updated latest jobs report at {latest_path}")
+
+    best_path = generate_best_jobs_report(
+        PROJECT_ROOT / "checkpoints",
+        output_path=Path(reports.get("best_jobs_html") or (PROJECT_ROOT / "checkpoints" / "reports" / "best_jobs.html")),
+        latest_n=max(latest_n, 200),
+    )
+    reports["best_jobs_html"] = str(best_path)
+    _log(f"Updated best jobs report at {best_path}")
+
+
+def _apply_resume_settings(state: dict[str, Any], *, wave_count: int, poll_seconds: int) -> None:
+    current_wave_count = int(state.get("wave_count", 0) or 0)
+    if wave_count > current_wave_count:
+        state["wave_count"] = wave_count
+        _log(f"Extended campaign wave_count from {current_wave_count} to {wave_count}")
+    else:
+        state.setdefault("wave_count", current_wave_count or wave_count)
+
+    current_poll_seconds = int(state.get("poll_seconds", poll_seconds) or poll_seconds)
+    if current_poll_seconds != poll_seconds:
+        state["poll_seconds"] = poll_seconds
+        _log(f"Updated poll interval from {current_poll_seconds}s to {poll_seconds}s")
+    else:
+        state.setdefault("poll_seconds", poll_seconds)
+
+    reports = state.setdefault("reports", {})
+    reports.setdefault("latest_jobs_html", str((PROJECT_ROOT / "checkpoints" / "reports" / "latest_jobs.html").resolve()))
+    reports.setdefault("best_jobs_html", str((PROJECT_ROOT / "checkpoints" / "reports" / "best_jobs.html").resolve()))
 
 
 def run_autopilot(
@@ -845,6 +1164,8 @@ def run_autopilot(
     if state_path.exists():
         state = json.loads(state_path.read_text())
         _log(f"Resuming autopilot campaign {campaign_slug}")
+        _apply_resume_settings(state, wave_count=wave_count, poll_seconds=poll_seconds)
+        _save_state(state_path, state)
     else:
         state = _init_state(campaign_slug, campaign_dir, wave_count, poll_seconds)
         _save_state(state_path, state)
@@ -867,18 +1188,19 @@ def run_autopilot(
             continue
 
         _update_wave(current_wave, max_retries=max_retries, configure_timeout_seconds=configure_timeout_seconds)
-        _refresh_report(latest_n=latest_n)
+        _refresh_reports(state, latest_n=latest_n)
         _save_state(state_path, state)
 
         if current_wave["status"] == "completed":
             continue
 
-        _log(f"Sleeping for {poll_seconds} seconds before the next poll")
-        time.sleep(poll_seconds)
+        sleep_seconds = int(state.get("poll_seconds", poll_seconds) or poll_seconds)
+        _log(f"Sleeping for {sleep_seconds} seconds before the next poll")
+        time.sleep(sleep_seconds)
 
     state["status"] = "completed"
     state["completed_at"] = utc_now_iso()
-    _refresh_report(latest_n=latest_n)
+    _refresh_reports(state, latest_n=latest_n)
     _save_state(state_path, state)
     _log(f"Autopilot campaign {campaign_slug} finished")
     return state_path

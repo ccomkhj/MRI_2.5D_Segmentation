@@ -15,6 +15,12 @@ TASK_METRICS: dict[str, tuple[str, ...]] = {
     "classification": ("acc", "macro_f1"),
     "segmentation": ("precision_target", "dice_target", "recall_target"),
 }
+BEST_SEGMENTATION_METRICS: tuple[tuple[str, str], ...] = (
+    ("best_precision_target", "Best val/precision_target"),
+    ("best_threshold_sweep_target_best_dice", "Best val/threshold_sweep_target_best_dice"),
+    ("best_dice_target", "Best val/dice_target"),
+    ("best_recall_target", "Best val/recall_target"),
+)
 
 
 def load_training_run_manifests(root: Path) -> list[dict[str, Any]]:
@@ -160,6 +166,10 @@ def extract_report_row(manifest: dict[str, Any]) -> dict[str, Any] | None:
     }
 
     for metric_name in ("acc", "macro_f1", "precision_target", "dice_target", "recall_target"):
+        row[f"best_{metric_name}"] = _parse_float(best_val_metrics.get(metric_name))
+        row[f"final_{metric_name}"] = _parse_float(final_val_metrics.get(metric_name))
+    sweep_names = ("threshold_sweep_target_best_dice", "threshold_sweep_target_best_precision", "threshold_sweep_target_best_recall")
+    for metric_name in sweep_names:
         row[f"best_{metric_name}"] = _parse_float(best_val_metrics.get(metric_name))
         row[f"final_{metric_name}"] = _parse_float(final_val_metrics.get(metric_name))
     return row
@@ -319,6 +329,26 @@ def _segmentation_rows(rows: Sequence[dict[str, Any]]) -> list[str]:
             f"<td>{_format_metric(row.get('final_dice_target'))}</td>"
             f"<td>{_format_metric(row.get('best_recall_target'))}</td>"
             f"<td>{_format_metric(row.get('final_recall_target'))}</td>"
+            "</tr>"
+        )
+    return rendered_rows
+
+
+def _best_jobs_rows(rows: Sequence[dict[str, Any]], metric_name: str) -> list[str]:
+    rendered_rows = []
+    for row in rows:
+        rendered_rows.append(
+            "<tr>"
+            f"<td>{_render_link(str(row.get('run_name') or 'run'), row.get('run_dir'))}</td>"
+            f"<td>{_format_text(row.get('status'))}</td>"
+            f"<td>{_format_text(row.get('finished_at'))}</td>"
+            f"<td>{_format_text(row.get('best_epoch'))}</td>"
+            f"<td>{_format_metric(_parse_float(row.get(metric_name)))}</td>"
+            f"<td>{_format_metric(row.get('best_precision_target'))}</td>"
+            f"<td>{_format_metric(row.get('best_threshold_sweep_target_best_dice'))}</td>"
+            f"<td>{_format_metric(row.get('best_dice_target'))}</td>"
+            f"<td>{_render_link('config', row.get('config_path'))}</td>"
+            f"<td>{_render_link_group(row)}</td>"
             "</tr>"
         )
     return rendered_rows
@@ -643,6 +673,212 @@ def render_latest_jobs_html(
 """
 
 
+def select_best_job_rows(
+    manifests: Sequence[dict[str, Any]],
+    *,
+    latest_n: int,
+    task: str = "segmentation",
+) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    skipped_count = 0
+
+    for manifest in manifests:
+        row = extract_report_row(manifest)
+        if row is None:
+            skipped_count += 1
+            continue
+        if task and row.get("task") != task:
+            continue
+        rows.append(row)
+
+    rows.sort(key=_row_sort_key, reverse=True)
+    return rows[:latest_n], skipped_count
+
+
+def _best_metric_top_rows(rows: Sequence[dict[str, Any]], metric_name: str, top_n: int) -> list[dict[str, Any]]:
+    ranked = [row for row in rows if _parse_float(row.get(metric_name)) is not None]
+    ranked.sort(
+        key=lambda row: (
+            _parse_float(row.get(metric_name)) is not None,
+            _parse_float(row.get(metric_name)) if _parse_float(row.get(metric_name)) is not None else float("-inf"),
+            *_row_sort_key(row),
+        ),
+        reverse=True,
+    )
+    return ranked[:top_n]
+
+
+def render_best_jobs_html(
+    rows: Sequence[dict[str, Any]],
+    *,
+    root: Path,
+    latest_n: int,
+    skipped_count: int,
+    generated_at: str | None = None,
+) -> str:
+    generated_at = generated_at or utc_now_iso()
+    segmentation_rows = [row for row in rows if row.get("task") == "segmentation"]
+
+    stats = [
+        _stat_card("Included segmentation jobs", len(segmentation_rows)),
+        _stat_card("Skipped jobs", skipped_count),
+    ]
+    for metric_name, label in BEST_SEGMENTATION_METRICS:
+        top_rows = _best_metric_top_rows(segmentation_rows, metric_name, top_n=1)
+        top_value = _parse_float(top_rows[0].get(metric_name)) if top_rows else None
+        pretty_label = label.removeprefix("Best val/")
+        stats.append(
+            '<div class="stat-card">'
+            f'<div class="stat-label">{escape(pretty_label)}</div>'
+            f'<div class="stat-value">{escape(f"{top_value:.4f}" if top_value is not None else "—")}</div>'
+            "</div>"
+        )
+    stats_html = "".join(stats)
+
+    sections_html = []
+    for metric_name, label in BEST_SEGMENTATION_METRICS:
+        top_rows = _best_metric_top_rows(segmentation_rows, metric_name, top_n=10)
+        table = _render_table(
+            headers=(
+                "Run",
+                "Status",
+                "Finished at",
+                "Best epoch",
+                label,
+                "Best val/precision_target",
+                "Best val/threshold_sweep_target_best_dice",
+                "Best val/dice_target",
+                "Config",
+                "Artifacts",
+            ),
+            rows=_best_jobs_rows(top_rows, metric_name),
+            empty_message=f"No segmentation runs with {label}.",
+            colspan=10,
+        )
+        sections_html.append(
+            '<section class="section">'
+            f"<h2>{escape(label)}</h2>"
+            f"<p>Top segmentation jobs ranked by {escape(label)}.</p>"
+            f"{table}"
+            "</section>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Best Training Jobs Report</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f1f4ec;
+      --panel: #ffffff;
+      --panel-alt: #f8faf5;
+      --text: #213126;
+      --muted: #647765;
+      --accent: #2f6d3d;
+      --accent-soft: #dbe8d9;
+      --border: #d2dfd0;
+      --shadow: 0 14px 40px rgba(33, 49, 38, 0.10);
+    }}
+
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(47, 109, 61, 0.14), transparent 32%),
+        linear-gradient(180deg, #f8fbf4 0%, var(--bg) 100%);
+      color: var(--text);
+      line-height: 1.5;
+    }}
+    .container {{ max-width: 1500px; margin: 0 auto; padding: 28px; }}
+    .hero {{
+      background: linear-gradient(135deg, #274a2c 0%, #2f6d3d 55%, #4f8a56 100%);
+      color: #fff;
+      border-radius: 24px;
+      padding: 32px;
+      box-shadow: var(--shadow);
+      margin-bottom: 28px;
+    }}
+    .hero h1 {{ margin: 0 0 10px; font-size: 2.2rem; line-height: 1.15; }}
+    .hero p {{ margin: 6px 0; color: rgba(255,255,255,0.9); }}
+    .stats-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }}
+    .stat-card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px 20px;
+      box-shadow: var(--shadow);
+    }}
+    .stat-label {{ color: var(--muted); font-size: 0.95rem; margin-bottom: 8px; }}
+    .stat-value {{ font-size: 2rem; font-weight: 700; color: var(--accent); }}
+    .section {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }}
+    .section h2 {{ margin: 0 0 16px; font-size: 1.35rem; }}
+    .section p {{ margin: 0 0 16px; color: var(--muted); }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 16px;
+      background: var(--panel-alt);
+    }}
+    th, td {{
+      text-align: left;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }}
+    th {{ background: var(--accent-soft); color: var(--text); font-size: 0.92rem; }}
+    tbody tr:hover {{ background: #f2f8f0; }}
+    a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
+    a:hover {{ text-decoration: underline; }}
+    .muted {{ color: var(--muted); }}
+    .link-group {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+    .empty-row {{ text-align: center; color: var(--muted); background: #fbfdfc; }}
+    .footer {{ color: var(--muted); font-size: 0.92rem; text-align: center; padding: 10px 0 30px; }}
+    @media (max-width: 900px) {{
+      .container {{ padding: 18px; }}
+      .hero, .section {{ padding: 20px; border-radius: 18px; }}
+      table, thead, tbody, tr, th, td {{ display: block; }}
+      thead {{ display: none; }}
+      tr {{ border-bottom: 1px solid var(--border); padding: 8px 0; }}
+      td {{ padding: 8px 0; border-bottom: none; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="hero">
+      <h1>Best Training Jobs Report</h1>
+      <p>Generated at: {escape(generated_at)}</p>
+      <p>Report root: {escape(str(root.resolve()))}</p>
+      <p>Included segmentation jobs: latest {latest_n} manifests with usable metrics, ranked into per-metric leaderboards.</p>
+    </section>
+    <section class="stats-grid">
+      {stats_html}
+    </section>
+    {''.join(sections_html)}
+    <div class="footer">Static offline HTML report generated from local run manifests.</div>
+  </div>
+</body>
+</html>
+"""
+
+
 def generate_latest_jobs_report(
     root: Path,
     *,
@@ -666,10 +902,35 @@ def generate_latest_jobs_report(
     return destination
 
 
+def generate_best_jobs_report(
+    root: Path,
+    *,
+    output_path: Path | None = None,
+    latest_n: int = 50,
+) -> Path:
+    manifests = load_training_run_manifests(root)
+    rows, skipped_count = select_best_job_rows(manifests, latest_n=latest_n, task="segmentation")
+    html = render_best_jobs_html(
+        rows,
+        root=root,
+        latest_n=latest_n,
+        skipped_count=skipped_count,
+        generated_at=utc_now_iso(),
+    )
+
+    destination = output_path or (root / "reports" / "best_jobs.html")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(html)
+    return destination
+
+
 __all__ = [
     "extract_report_row",
+    "generate_best_jobs_report",
     "generate_latest_jobs_report",
     "load_training_run_manifests",
+    "render_best_jobs_html",
     "render_latest_jobs_html",
+    "select_best_job_rows",
     "select_latest_job_rows",
 ]
