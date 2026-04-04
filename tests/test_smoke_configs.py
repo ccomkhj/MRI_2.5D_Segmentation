@@ -274,6 +274,7 @@ def test_segmentation_apr03_positive_onecycle_100_variants_load():
             "train.batch_size": 12,
             "train.lr": 2.5e-05,
             "model.name": "simple_unet",
+            "model.params.in_channels": 9,
         },
         "mri/config/task/segmentation_apr03_positive_dynunet_100.yaml": {
             "train.epochs": 100,
@@ -282,6 +283,18 @@ def test_segmentation_apr03_positive_onecycle_100_variants_load():
             "scheduler.name": "onecycle",
             "scheduler.params.max_lr": 1.2e-04,
             "model.name": "dynunet",
+        },
+        "mri/config/task/segmentation_apr03_positive_dynunet_stack7_sweep_dice_100.yaml": {
+            "train.epochs": 100,
+            "train.batch_size": 6,
+            "train.lr": 2.0e-05,
+            "data.stack_depth": 7,
+            "scheduler.name": "onecycle",
+            "scheduler.params.max_lr": 1.0e-04,
+            "metrics.primary_metric_name": "threshold_sweep_target_best_dice",
+            "metrics.threshold_sweep.every": 1,
+            "model.name": "dynunet",
+            "model.params.in_channels": 9,
         },
         "mri/config/task/segmentation_apr03_positive_onecycle_moddrop_100.yaml": {
             "train.epochs": 100,
@@ -300,6 +313,27 @@ def test_segmentation_apr03_positive_onecycle_100_variants_load():
             "metrics.primary_metric_name": "threshold_sweep_target_best_dice",
             "metrics.threshold_sweep.every": 1,
             "model.name": "simple_unet",
+            "model.params.in_channels": 9,
+        },
+        "mri/config/task/segmentation_apr03_positive_unet_conservative_100.yaml": {
+            "train.epochs": 100,
+            "train.batch_size": 8,
+            "train.lr": 2.5e-05,
+            "scheduler.name": "onecycle",
+            "scheduler.params.max_lr": 1.2e-04,
+            "model.name": "unet",
+        },
+        "mri/config/task/segmentation_apr03_positive_unet_stack7_sweep_dice_100.yaml": {
+            "train.epochs": 100,
+            "train.batch_size": 6,
+            "train.lr": 2.0e-05,
+            "data.stack_depth": 7,
+            "scheduler.name": "onecycle",
+            "scheduler.params.max_lr": 1.0e-04,
+            "metrics.primary_metric_name": "threshold_sweep_target_best_dice",
+            "metrics.threshold_sweep.every": 1,
+            "model.name": "unet",
+            "model.params.in_channels": 9,
         },
     }
 
@@ -319,6 +353,8 @@ def test_segmentation_apr03_positive_onecycle_100_variants_load():
             assert cfg["train"]["batch_size"] == expected["train.batch_size"]
         if "data.stack_depth" in expected:
             assert cfg["data"]["stack_depth"] == expected["data.stack_depth"]
+        if "model.params.in_channels" in expected:
+            assert cfg["model"]["params"]["in_channels"] == expected["model.params.in_channels"]
         if "augment.name" in expected:
             assert cfg["augment"]["name"] == expected["augment.name"]
         if "augment.params.adc_dropout_prob" in expected:
