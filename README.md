@@ -5,10 +5,12 @@ This repository uses a config-driven modular architecture for prostate MRI segme
 **Official execution paths:**
 - `mri/cli/train.py`
 - `mri/cli/infer.py`
+- `mri/cli/pipeline_infer.py`
 - `mri/cli/sweep.py`
 - `mri/cli/research.py`
 - `scripts/new/train`
 - `scripts/new/inference`
+- `scripts/new/pipeline-inference`
 
 Compatibility wrappers exist in `service/train.py` and `service/inference.py`, but new work should use the `mri/cli/*` and `scripts/new/*` entrypoints.
 
@@ -94,6 +96,7 @@ scripts/
   new/
     train
     inference
+    pipeline-inference
 
 tools/
   generate_splits.py
@@ -167,9 +170,16 @@ bash scripts/new/inference --config mri/config/task/segmentation.yaml --split te
 sbatch scripts/new/inference --config mri/config/task/segmentation.yaml --split test
 ```
 
+For the checkpoint-driven two-stage inference path without retraining:
+
+```bash
+python mri/cli/pipeline_infer.py --seg-checkpoint checkpoints/seg/<run>/<run>_best.pt --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt --dry-run
+bash scripts/new/pipeline-inference --seg-checkpoint checkpoints/seg/<run>/<run>_best.pt --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt --dry-run
+```
+
 ## Native HPC Script Behavior
 
-`scripts/new/train` and `scripts/new/inference`:
+`scripts/new/train`, `scripts/new/inference`, and `scripts/new/pipeline-inference`:
 - run directly on node Python environment
 - support both direct run and `sbatch`
 - auto-load `.env` if present

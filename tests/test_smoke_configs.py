@@ -375,6 +375,75 @@ def test_segmentation_apr03_positive_onecycle_100_variants_load():
             assert cfg["loss"]["params"]["bce_pos_weight"] == expected["loss.params.bce_pos_weight"]
 
 
+def test_segmentation_sweepdice_experiment_variants_load():
+    configs = {
+        "mri/config/task/segmentation_sweepdice_dynunet_dice_100.yaml": {
+            "model.name": "dynunet",
+            "loss.name": "dice",
+            "loss.params.per_channel": True,
+        },
+        "mri/config/task/segmentation_sweepdice_dynunet_dice_bce_balanced_100.yaml": {
+            "model.name": "dynunet",
+            "loss.name": "dice_bce",
+            "loss.params.dice_weight": 0.5,
+            "loss.params.bce_weight": 0.5,
+            "loss.params.per_channel_dice": True,
+        },
+        "mri/config/task/segmentation_sweepdice_dynunet_focal_gamma2_100.yaml": {
+            "model.name": "dynunet",
+            "loss.name": "focal",
+            "loss.params.gamma": 2.0,
+        },
+        "mri/config/task/segmentation_sweepdice_simpleunet_dice_100.yaml": {
+            "model.name": "simple_unet",
+            "loss.name": "dice",
+            "loss.params.per_channel": True,
+        },
+        "mri/config/task/segmentation_sweepdice_dynunet_temperature_scaling_100.yaml": {
+            "model.name": "dynunet",
+            "model.params.learn_logit_temperature": True,
+            "model.params.logit_temperature_init": 1.5,
+        },
+        "mri/config/task/segmentation_sweepdice_dynunet_logit_bias_100.yaml": {
+            "model.name": "dynunet",
+            "model.params.learn_logit_bias": True,
+            "model.params.logit_bias_init": [0.0, 0.0],
+        },
+    }
+
+    expected_thresholds = [round(x, 2) for x in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]]
+
+    for path, expected in configs.items():
+        cfg = load_config(path)
+
+        assert cfg["task"]["name"] == "segmentation"
+        assert cfg["data"]["require_positive"] is True
+        assert cfg["train"]["epochs"] == 100
+        assert cfg["metrics"]["primary_metric_name"] == "threshold_sweep_target_best_dice"
+        assert cfg["metrics"]["threshold_sweep"]["enabled"] is True
+        assert cfg["metrics"]["threshold_sweep"]["every"] == 1
+        assert cfg["metrics"]["threshold_sweep"]["class_names"] == ["target"]
+        assert cfg["metrics"]["threshold_sweep"]["thresholds"] == expected_thresholds
+        assert cfg["model"]["name"] == expected["model.name"]
+
+        if "loss.name" in expected:
+            assert cfg["loss"]["name"] == expected["loss.name"]
+        if "loss.params.per_channel" in expected:
+            assert cfg["loss"]["params"]["per_channel"] is expected["loss.params.per_channel"]
+        if "loss.params.dice_weight" in expected:
+            assert cfg["loss"]["params"]["dice_weight"] == expected["loss.params.dice_weight"]
+            assert cfg["loss"]["params"]["bce_weight"] == expected["loss.params.bce_weight"]
+            assert cfg["loss"]["params"]["per_channel_dice"] is expected["loss.params.per_channel_dice"]
+        if "loss.params.gamma" in expected:
+            assert cfg["loss"]["params"]["gamma"] == expected["loss.params.gamma"]
+        if "model.params.learn_logit_temperature" in expected:
+            assert cfg["model"]["params"]["learn_logit_temperature"] is expected["model.params.learn_logit_temperature"]
+            assert cfg["model"]["params"]["logit_temperature_init"] == expected["model.params.logit_temperature_init"]
+        if "model.params.learn_logit_bias" in expected:
+            assert cfg["model"]["params"]["learn_logit_bias"] is expected["model.params.learn_logit_bias"]
+            assert cfg["model"]["params"]["logit_bias_init"] == expected["model.params.logit_bias_init"]
+
+
 def test_smoke_split_has_one_case_per_split():
     split_path = Path("data/splits/smoke_3case.yaml")
     split = yaml.safe_load(split_path.read_text())
