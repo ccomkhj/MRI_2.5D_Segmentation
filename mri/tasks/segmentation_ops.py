@@ -254,6 +254,63 @@ class DiceLoss(nn.Module):
         return 1 - dice
 
 
+class FocalLoss(nn.Module):
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        alpha: float | Sequence[float] | None = None,
+        pos_weight: Sequence[float] | None = None,
+    ) -> None:
+        super().__init__()
+        self.gamma = gamma
+        if alpha is None:
+            self.register_buffer("alpha", torch.empty(0), persistent=False)
+        else:
+            alpha_values = [float(alpha)] if isinstance(alpha, (int, float)) else [float(item) for item in alpha]
+            self.register_buffer(
+                "alpha",
+                torch.as_tensor(alpha_values, dtype=torch.float32),
+                persistent=False,
+            )
+        if pos_weight is None:
+            self.register_buffer("pos_weight", torch.empty(0), persistent=False)
+        else:
+            self.register_buffer(
+                "pos_weight",
+                torch.as_tensor(list(pos_weight), dtype=torch.float32),
+                persistent=False,
+            )
+
+    def forward(self, pred_logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pos_weight = None
+        if self.pos_weight.numel() > 0:
+            pos_weight = self.pos_weight.to(device=pred_logits.device, dtype=pred_logits.dtype).view(
+                1,
+                -1,
+                *([1] * max(pred_logits.ndim - 2, 0)),
+            )
+        bce = F.binary_cross_entropy_with_logits(
+            pred_logits,
+            target,
+            pos_weight=pos_weight,
+            reduction="none",
+        )
+        pred_probs = torch.sigmoid(pred_logits)
+        p_t = pred_probs * target + (1 - pred_probs) * (1 - target)
+        focal_factor = (1 - p_t).pow(self.gamma)
+        loss = focal_factor * bce
+
+        if self.alpha.numel() > 0:
+            alpha = self.alpha.to(device=pred_logits.device, dtype=pred_logits.dtype)
+            if alpha.numel() == 1:
+                alpha = alpha.repeat(pred_logits.shape[1])
+            alpha = alpha.view(1, -1, *([1] * max(pred_logits.ndim - 2, 0)))
+            alpha_factor = alpha * target + (1 - alpha) * (1 - target)
+            loss = alpha_factor * loss
+
+        return loss.mean()
+
+
 class DiceBCELoss(nn.Module):
     def __init__(
         self,

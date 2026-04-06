@@ -13,6 +13,7 @@ from .base import Task
 from .segmentation_ops import (
     DiceBCELoss,
     DiceLoss,
+    FocalLoss,
     FocalTverskyLoss,
     compute_segmentation_metrics,
     default_threshold_sweep_thresholds,
@@ -55,7 +56,11 @@ class SegmentationTask(Task):
 
     def _build_loss(self, loss_name: str, params: Dict) -> nn.Module:
         if loss_name == "dice":
-            return DiceLoss()
+            return DiceLoss(
+                smooth=params.get("smooth", 1.0),
+                per_channel=bool(params.get("per_channel", False)),
+                class_weights=params.get("class_weights"),
+            )
         if loss_name == "bce":
             return nn.BCEWithLogitsLoss()
         if loss_name == "dice_bce":
@@ -65,6 +70,12 @@ class SegmentationTask(Task):
                 per_channel_dice=bool(params.get("per_channel_dice", False)),
                 dice_class_weights=params.get("dice_class_weights"),
                 bce_pos_weight=params.get("bce_pos_weight"),
+            )
+        if loss_name == "focal":
+            return FocalLoss(
+                gamma=params.get("gamma", 2.0),
+                alpha=params.get("alpha"),
+                pos_weight=params.get("pos_weight"),
             )
         if loss_name == "focal_tversky":
             return FocalTverskyLoss(

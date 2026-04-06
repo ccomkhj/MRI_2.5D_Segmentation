@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from mri.tasks.segmentation_ops import DiceBCELoss, compute_segmentation_metrics, compute_threshold_sweep_metrics
+from mri.tasks.segmentation_ops import DiceBCELoss, FocalLoss, compute_segmentation_metrics, compute_threshold_sweep_metrics
 
 
 def test_compute_segmentation_metrics_perfect_prediction():
@@ -122,3 +122,16 @@ def test_threshold_sweep_metrics_find_best_target_threshold():
     assert abs(metrics["threshold_sweep_target_best_precision"] - 1.0) < 1e-6
     assert abs(metrics["threshold_sweep_target_best_recall"] - 1.0) < 1e-6
     assert abs(metrics["threshold_sweep_target_best_dice"] - 1.0) < 1e-6
+
+
+def test_focal_loss_downweights_easy_examples():
+    target = torch.tensor([[[[1.0]]]], dtype=torch.float32)
+    easy_logits = torch.tensor([[[[8.0]]]], dtype=torch.float32)
+    hard_logits = torch.tensor([[[[0.2]]]], dtype=torch.float32)
+
+    loss_fn = FocalLoss(gamma=2.0)
+
+    easy_loss = loss_fn(easy_logits, target)
+    hard_loss = loss_fn(hard_logits, target)
+
+    assert hard_loss > easy_loss
