@@ -8,28 +8,11 @@ from typing import Any, Dict, List
 import copy
 import os
 import shutil
-import subprocess
 import time
 
-import yaml
-
-from mri.config.loader import load_config
+from mri.config.loader import load_config, load_yaml, set_nested_value
 from mri.experiments.runtime import utc_now_iso, write_json, write_summary_reports, write_yaml
-
-
-def _load_yaml(path: Path) -> Dict[str, Any]:
-    with path.open() as handle:
-        return yaml.safe_load(handle) or {}
-
-
-def _set_nested_value(payload: Dict[str, Any], dotted_key: str, value: Any) -> None:
-    cursor = payload
-    parts = dotted_key.split(".")
-    for part in parts[:-1]:
-        if part not in cursor or not isinstance(cursor[part], dict):
-            cursor[part] = {}
-        cursor = cursor[part]
-    cursor[parts[-1]] = value
+from mri.experiments.slurm import active_job_ids, submit_slurm_job
 
 
 def _expand_grid(matrix: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
@@ -79,39 +62,20 @@ def _build_run_override_config(
     }
 
     for key, value in sweep_cfg.get("static_overrides", {}).items():
-        _set_nested_value(override_cfg, key, value)
+        set_nested_value(override_cfg, key, value)
     for key, value in run_overrides.items():
-        _set_nested_value(override_cfg, key, value)
+        set_nested_value(override_cfg, key, value)
     return override_cfg
-
-
-def _active_job_ids(job_ids: List[str]) -> List[str]:
-    if not job_ids:
-        return []
-    if shutil.which("squeue") is None:
-        return []
-
-    completed = subprocess.run(
-        ["squeue", "-h", "-j", ",".join(job_ids), "-o", "%A"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-
-
-def _submit_slurm_job(command: List[str]) -> str:
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    return completed.stdout.strip().split(";", maxsplit=1)[0]
 
 
 def run_sweep(
     *,
     config_path: Path,
     dry_run: bool = False,
+    force: bool = False,
     poll_interval: int = 30,
 ) -> Dict[str, Any]:
-    sweep_cfg = _load_yaml(config_path)
+    sweep_cfg = load_yaml(config_path)
     required_keys = {"name", "purpose", "base_config", "matrix"}
     missing = sorted(required_keys.difference(sweep_cfg))
     if missing:
@@ -126,8 +90,11 @@ def run_sweep(
     configs_dir.mkdir(parents=True, exist_ok=True)
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    if manifest_path.exists() and not dry_run:
-        raise FileExistsError(f"Sweep manifest already exists: {manifest_path}")
+    if manifest_path.exists() and not dry_run and not force:
+        raise FileExistsError(
+            f"Sweep manifest already exists: {manifest_path}. "
+            "Use --force to overwrite."
+        )
 
     base_config_path = Path(sweep_cfg["base_config"])
     if not base_config_path.is_absolute():
@@ -195,12 +162,12 @@ def run_sweep(
 
         if launcher == "slurm" and not dry_run:
             while True:
-                active_jobs = _active_job_ids(submitted_job_ids)
+                active_jobs = active_job_ids(submitted_job_ids)
                 if len(active_jobs) < max_concurrent_jobs:
                     break
                 time.sleep(poll_interval)
 
-            job_id = _submit_slurm_job(command)
+            job_id = submit_slurm_job(command)
             submitted_job_ids.append(job_id)
             run_record["job_id"] = job_id
 

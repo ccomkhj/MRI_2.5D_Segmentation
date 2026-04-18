@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -17,7 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mri.data.metadata import load_metadata
 
 
-DEFAULT_SOURCE = Path("/Users/huijokim/personal/tcia-handler/data/aligned_v2")
+DEFAULT_SOURCE = Path(os.environ.get("SOURCE_DATA", ""))
+if not DEFAULT_SOURCE.parts:
+    DEFAULT_SOURCE = Path("data/aligned_v2")
 DEFAULT_DEST = Path("data/aligned_v2")
 
 

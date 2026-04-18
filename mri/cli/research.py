@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 
 from mri.cli.infer import main as infer_main
 from mri.cli.train import main as train_main
+from mri.config.loader import set_nested_value
 from mri.data.index_builders import load_split_file
 from mri.experiments.runtime import utc_now_iso, write_json, write_yaml
 from tools.dataset.import_tcia_aligned import DEFAULT_SOURCE, sync_aligned_dataset, validate_aligned_dataset
@@ -22,16 +23,6 @@ from tools.generate_splits import build_splits, summarize_splits, write_split_ar
 
 def _relative_path(from_dir: Path, target: Path) -> str:
     return str(Path(os.path.relpath(target, from_dir)))
-
-
-def _set_nested_value(payload: Dict[str, Any], dotted_key: str, value: Any) -> None:
-    cursor = payload
-    parts = dotted_key.split(".")
-    for part in parts[:-1]:
-        if part not in cursor or not isinstance(cursor[part], dict):
-            cursor[part] = {}
-        cursor = cursor[part]
-    cursor[parts[-1]] = value
 
 
 def _build_override_config(
@@ -44,7 +35,7 @@ def _build_override_config(
         "extends": [str(base_config_path.resolve())],
     }
     for key, value in overrides.items():
-        _set_nested_value(payload, key, value)
+        set_nested_value(payload, key, value)
     write_yaml(generated_config_path, payload)
     return generated_config_path
 

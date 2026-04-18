@@ -140,15 +140,18 @@ class SegmentationTask(Task):
     def aggregate_metrics(self, metrics_list: list[Dict]) -> Dict:
         if not metrics_list:
             return {}
-        agg: Dict[str, float] = {}
-        counts: Dict[str, int] = {}
+        total_loss = 0.0
+        total_dice = 0.0
+        total_samples = 0
         for m in metrics_list:
-            for key, value in m.items():
-                agg[key] = agg.get(key, 0.0) + float(value)
-                counts[key] = counts.get(key, 0) + 1
-        for key in list(agg):
-            agg[key] /= counts[key]
-        return agg
+            bs = m.get("_batch_size", 1)
+            total_loss += m["loss"] * bs
+            total_dice += m["dice"] * bs
+            total_samples += bs
+        return {
+            "loss": total_loss / max(1, total_samples),
+            "dice": total_dice / max(1, total_samples),
+        }
 
     def start_validation_epoch(self, epoch: int) -> None:
         self._threshold_sweep_epoch = epoch

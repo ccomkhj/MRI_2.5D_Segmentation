@@ -58,22 +58,41 @@ class ClassificationTask(Task):
         logits = model(images)
         loss = self.loss_fn(logits, labels)
         preds = torch.argmax(logits, dim=1)
-        acc = (preds == labels).float().mean().item()
-        f1 = _macro_f1(preds.cpu(), labels.cpu(), self.num_classes)
-        metrics = {"loss": loss.item(), "acc": acc, "macro_f1": f1}
+        batch_size = images.shape[0]
+        metrics: Dict = {
+            "loss": loss.item(),
+            "_batch_size": batch_size,
+            "_preds": preds.cpu(),
+            "_targets": labels.cpu(),
+        }
         return loss, metrics
 
     def aggregate_metrics(self, metrics_list: list[Dict]) -> Dict:
         if not metrics_list:
             return {}
-        agg: Dict[str, float] = {}
-        counts: Dict[str, int] = {}
+
+        # Collect epoch-level predictions for non-decomposable metrics.
+        all_preds = []
+        all_targets = []
+        total_loss = 0.0
+        total_samples = 0
         for m in metrics_list:
-            for key, value in m.items():
-                agg[key] = agg.get(key, 0.0) + float(value)
-                counts[key] = counts.get(key, 0) + 1
-        for key in list(agg):
-            agg[key] /= counts[key]
+            bs = m.get("_batch_size", 1)
+            total_loss += m["loss"] * bs
+            total_samples += bs
+            if "_preds" in m:
+                all_preds.append(m["_preds"])
+            if "_targets" in m:
+                all_targets.append(m["_targets"])
+
+        agg: Dict[str, float] = {"loss": total_loss / max(1, total_samples)}
+
+        if all_preds and all_targets:
+            epoch_preds = torch.cat(all_preds)
+            epoch_targets = torch.cat(all_targets)
+            agg["acc"] = (epoch_preds == epoch_targets).float().mean().item()
+            agg["macro_f1"] = _macro_f1(epoch_preds, epoch_targets, self.num_classes)
+
         return agg
 
     def primary_metric(self, metrics: Dict) -> float:

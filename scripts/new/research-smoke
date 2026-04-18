@@ -32,7 +32,11 @@ if [[ -f "${PROJECT_DIR}/.env" ]]; then
 fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-SOURCE_DATA="${SOURCE_DATA:-/Users/huijokim/personal/tcia-handler/data/aligned_v2}"
+if [[ -z "${SOURCE_DATA:-}" ]]; then
+    echo "ERROR: SOURCE_DATA is not set. Set it to the aligned_v2 directory, e.g.:"
+    echo "  export SOURCE_DATA=/path/to/tcia-handler/data/aligned_v2"
+    exit 1
+fi
 DEST_DATA="${DEST_DATA:-${PROJECT_DIR}/data/aligned_v2}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_DIR}/experiments/research}"
 MPLCONFIGDIR="${MPLCONFIGDIR:-${PROJECT_DIR}/.cache/matplotlib}"

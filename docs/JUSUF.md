@@ -1,153 +1,236 @@
 # JUSUF HPC Configuration Guide
 
 ## Overview
-JUSUF (Jülich Supercomputing Facility) is a high-performance computing system at Forschungszentrum Jülich. This guide documents key configuration requirements and common issues when running GPU-accelerated jobs.
+JUSUF (Jülich Supercomputing Facility) is a high-performance computing system at Forschungszentrum Jülich. This guide covers data preparation, environment setup, and running training/inference jobs on JUSUF.
 
-## SLURM Job Submission
+## 1. Data Preparation
 
-### GPU Partition Configuration
+The pipeline expects an `aligned_v2` dataset with a `metadata.json` and per-case directories.
+
+**Required layout on the cluster:**
+```
+<project_root>/
+  data/
+    aligned_v2/
+      metadata.json
+      <case_id>/
+        t2/          # T2-weighted slices (0000.png, 0001.png, ...)
+        adc/         # ADC maps (optional per case)
+        calc/        # Calculated DWI (optional per case)
+        mask_prostate/
+        mask_target1/
+    splits/
+      2026-03-08.yaml   # frozen paper split (train/val/test case IDs)
+```
+
+**How to get data onto JUSUF:**
+1. Transfer the `aligned_v2/` directory to the cluster (e.g. via `rsync`).
+2. Place or symlink it at `data/aligned_v2/` relative to the repo root.
+3. Ensure `data/splits/2026-03-08.yaml` (or your dated split file) is committed in the repo.
+
+**Generate a new split (if needed):**
+```bash
+python tools/generate_splits.py \
+  --metadata data/aligned_v2/metadata.json \
+  --output data/splits/YYYY-MM-DD.yaml
+```
+
+## 2. Environment Setup (`.env`)
+
+Create a `.env` file at the repo root. The HPC scripts (`scripts/new/*`) source it automatically.
+
+```bash
+# .env  (do NOT commit this file)
+
+# Singularity container (set to run inside container on HPC)
+SIF_IMAGE=/p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif
+# SIF_EXTRA_BINDS=/extra/path:/extra/path   # additional bind mounts if needed
+
+# Required for research-smoke and import_tcia_aligned.py
+SOURCE_DATA=/p/project/ebrains-0000006/<user>/tcia-handler/data/aligned_v2
+
+# Optional overrides (defaults shown)
+PYTHON_BIN=python
+DATA_DIR=$PWD/data
+CHECKPOINT_DIR=$PWD/checkpoints
+PREDICTIONS_DIR=$PWD/predictions
+WANDB_DIR=$PWD/wandb
+WANDB_MODE=offline
+WANDB_API_KEY=<your-key>       # only needed if WANDB_MODE=online
+```
+
+**Singularity container (recommended):**
+
+The scripts run inside a Singularity container when `SIF_IMAGE` is set. Add it to `.env`:
+
+```bash
+SIF_IMAGE=/p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif
+```
+
+To rebuild the image (run on a login node):
+```bash
+singularity build singularity_images/mri-train.sif archive/scripts/singularity.def
+```
+
+**Native Python (alternative):**
+```bash
+conda create -n mri python=3.12 -y
+conda activate mri
+pip install -r requirements.txt
+```
+
+## 3. Training
+
+### Segmentation
+
+```bash
+# Interactive (bash)
+bash scripts/new/train --config mri/config/task/segmentation.yaml
+
+# SLURM job
+sbatch scripts/new/train --config mri/config/task/segmentation.yaml
+
+# With overrides
+sbatch scripts/new/train --config mri/config/task/segmentation.yaml \
+  --epochs 200 --lr 1e-4 --run_name seg-exp1
+```
+
+Default: SegResNet, 100 epochs, lr 5e-5, batch 4, Dice+BCE loss.
+Checkpoints go to `checkpoints/seg/<run_name>/`.
+
+### Classification
+
+Classification requires segmentation predictions to exist first (see Inference below).
+
+```bash
+# Interactive
+bash scripts/new/train --config mri/config/task/classification.yaml
+
+# SLURM job
+sbatch scripts/new/train --config mri/config/task/classification.yaml \
+  --run_name cls-exp1
+```
+
+Default: Swin, 50 epochs, lr 1e-4, batch 2, cross-entropy loss.
+Checkpoints go to `checkpoints/cls/<run_name>/`.
+
+The classification config points to `data.seg_pred_dir: data/seg_preds` by default. Update this to wherever your segmentation predictions live (see Section 4).
+
+## 4. Inference
+
+### Segmentation inference (produces predictions for classification)
+
+```bash
+# Run on all three splits to generate predictions for downstream classification
+sbatch scripts/new/inference \
+  --config mri/config/task/segmentation.yaml \
+  --split train \
+  --checkpoint checkpoints/seg/<run_name>/<run_name>_best.pt \
+  --output_dir data/seg_preds
+
+sbatch scripts/new/inference \
+  --config mri/config/task/segmentation.yaml \
+  --split val \
+  --checkpoint checkpoints/seg/<run_name>/<run_name>_best.pt \
+  --output_dir data/seg_preds
+
+sbatch scripts/new/inference \
+  --config mri/config/task/segmentation.yaml \
+  --split test \
+  --checkpoint checkpoints/seg/<run_name>/<run_name>_best.pt \
+  --output_dir data/seg_preds
+```
+
+This writes per-case prediction files under `data/seg_preds/<case_id>/`.
+
+### Classification inference
+
+```bash
+sbatch scripts/new/inference \
+  --config mri/config/task/classification.yaml \
+  --split test \
+  --checkpoint checkpoints/cls/<run_name>/<run_name>_best.pt
+```
+
+Results go to `predictions/` by default (or `--output_dir` override).
+
+## 5. Finding Checkpoints
+
+The trainer saves two checkpoints per run inside `<output_dir>/<run_name>/`:
+
+| File | Description |
+|------|-------------|
+| `<run_name>_best.pt` | Best validation metric (Dice for seg, macro-F1 for cls) |
+| `<run_name>_last.pt` | End of final epoch |
+
+**Always use `_best.pt` for inference and paper results.**
+
+Each run also writes these files alongside checkpoints:
+
+| File | Description |
+|------|-------------|
+| `resolved_config.yaml` | Exact config used (all layers merged) |
+| `run_manifest.json` | Full metadata: git commit, SLURM job ID, W&B URL, best metric, paths |
+| `metrics_history.csv` | Per-epoch train and val metrics |
+| `run_summary.json` | Final summary with best metric and epoch |
+
+**To find the best segmentation run:**
+```bash
+# List all completed seg run manifests sorted by Dice
+find checkpoints/seg -name run_manifest.json \
+  -exec grep -l '"status": "completed"' {} \; \
+  | xargs -I{} sh -c 'echo "$(python -c "import json; m=json.load(open(\"{}\")); print(m.get(\"summary\",{}).get(\"best_metric\",0), m[\"run_name\"])")"' \
+  | sort -rn
+```
+
+Or inspect a single run:
+```bash
+python -c "
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(f\"Run:        {m['run_name']}\")
+print(f\"Status:     {m['status']}\")
+print(f\"Best metric:{m.get('summary',{}).get('best_metric')}\")
+print(f\"Best epoch: {m.get('summary',{}).get('best_epoch')}\")
+print(f\"Checkpoint: {m.get('artifacts',{}).get('best_checkpoint')}\")
+" checkpoints/seg/<run_name>/run_manifest.json
+```
+
+## SLURM Reference
+
+### GPU Partition
 
 **Critical**: GPU jobs must use the `gpus` partition, NOT `gpu`.
 
 ```bash
-# Correct - will allocate GPU nodes
 #SBATCH --partition=gpus
 #SBATCH --gres=gpu:1
-
-# Incorrect - will allocate CPU-only nodes
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-```
-
-**Why this matters**: Even with `--gres=gpu:1`, using the wrong partition means your job runs on CPU-only nodes, causing NVIDIA-SMI to fail with:
-```
-NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running.
-```
-
-### Account Requirements
-
-JUSUF requires specifying a budget account for all job submissions:
-
-```bash
 #SBATCH --account=ebrains-0000006
 ```
 
-**To find your available accounts:**
-```bash
-jutil user projects
-```
+Using the wrong partition causes `NVIDIA-SMI has failed` errors even with `--gres=gpu:1`.
 
-### Complete Job Script Template
+Find your available accounts: `jutil user projects`
 
-```bash
-#!/bin/bash
-#SBATCH --job-name=mri-train-wandb
-#SBATCH --output=slurm-%j.out
-#SBATCH --error=slurm-%j.err
-#SBATCH --time=24:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --partition=gpus
-#SBATCH --account=ebrains-0000006
-```
+### GPU Node Specs
 
-## GPU Node Specifications
-
-- **GPU Type**: NVIDIA V100 PCIe (16 GB memory per GPU)
+- **GPU**: NVIDIA V100 PCIe (16 GB)
 - **GPUs per node**: 1
 - **Partition**: `gpus`
-- **Default GPU allocation**: `--gres=gpu:1` is default, no need to specify explicitly
 
-## Common Issues and Solutions
+### Job Monitoring
 
-### 1. Script Path Resolution in SLURM
-**Symptom**: `/var/spool/parastation/jobs/JOBID: line X: /var/spool/parastation/jobs/submit_slurm.sh: No such file or directory`
-**Cause**: SLURM copies scripts to a temporary location, breaking relative path resolution
-**Solution**: Use absolute paths in SLURM scripts instead of relative paths
-
-**Bad:**
 ```bash
-exec "$(dirname "${BASH_SOURCE[0]}")/submit_slurm.sh" ${ARGS} "$@"
+squeue -u $USER              # check job status
+cat slurm-<JOBID>.out        # view stdout
+cat slurm-<JOBID>.err        # view stderr
+scancel <JOBID>              # cancel job
 ```
 
-**Good:**
-```bash
-exec "/full/path/to/project/scripts/new/train" "$@"
-```
+### Common Issues
 
-### 2. NVIDIA Driver Communication Error
-**Symptom**: `NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver`
-**Cause**: Job running on CPU partition instead of GPU partition
-**Solution**: Change `--partition=gpu` to `--partition=gpus`
-
-### 2. Account Not Specified Error
-**Symptom**: `sbatch: error: job_submit_filter: please specify the job's account`
-**Cause**: Missing `--account` directive
-**Solution**: Add `--account=<your-project-account>` to job script
-
-### 3. Container Runtime Issues
-**Available container runtimes**:
-- Apptainer (preferred, newer Singularity replacement)
-- Singularity (legacy)
-
-**Auto-detection in scripts**:
-```bash
-if command -v singularity &> /dev/null; then
-    CONTAINER_CMD="singularity"
-elif command -v apptainer &> /dev/null; then
-    CONTAINER_CMD="apptainer"
-else
-    echo "ERROR: Neither 'singularity' nor 'apptainer' found in PATH."
-    exit 1
-fi
-```
-
-## GPU Visibility and Affinity
-
-SLURM automatically manages GPU visibility:
-- Sets `CUDA_VISIBLE_DEVICES` environment variable
-- Ensures CPU cores have affinity to allocated GPUs
-- Default: one task per GPU, GPU appears as device 0 to applications
-
-## Job Monitoring
-
-**Check job status**:
-```bash
-squeue -u $USER
-```
-
-**View job output**:
-```bash
-# Replace JOBID with actual job ID
-cat slurm-JOBID.out
-cat slurm-JOBID.err
-```
-
-**Cancel job**:
-```bash
-scancel JOBID
-```
-
-## Best Practices
-
-1. **Always use `sbatch`, never `bash`** for SLURM scripts
-2. **Verify partition name**: `gpus` for GPU jobs, not `gpu`
-3. **Specify account**: Required for all job submissions
-4. **Test with short jobs**: Use short runtimes for testing (`--time=00:15:00`)
-5. **Check GPU info**: Include `nvidia-smi` calls in scripts for verification
-6. **Use absolute paths**: Avoid relative paths that may break in batch environment
-
-## Key Resources
-
-- [JUSUF User Documentation](https://apps.fz-juelich.de/jsc/hps/jusuf/)
-- [GPU Computing Guide](https://apps.fz-juelich.de/jsc/hps/jusuf/gpu-computing.html)
-- [SLURM Documentation](https://apps.fz-juelich.de/jsc/hps/jusuf/batch-system.html)
-
-## Recent Changes
-
-- **Partition naming**: Confirmed `gpus` is correct for GPU access (not `gpu`)
-- **Account requirement**: All jobs require explicit account specification
-- **Container support**: Apptainer preferred over legacy Singularity
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `NVIDIA-SMI has failed` | Wrong partition (`gpu` instead of `gpus`) | `--partition=gpus` |
+| `please specify the job's account` | Missing account | `--account=ebrains-0000006` |
+| `No such file or directory` in SLURM | Relative path resolution | Use absolute paths or `SLURM_SUBMIT_DIR` |

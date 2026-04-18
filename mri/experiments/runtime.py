@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 
 import yaml
 
@@ -32,9 +33,23 @@ def serialize_data(value: Any) -> Any:
 
 def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp")
-    tmp_path.write_text(text)
-    tmp_path.replace(path)
+    fd = tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    try:
+        fd.write(text)
+        fd.flush()
+        os.fsync(fd.fileno())
+        fd.close()
+        Path(fd.name).replace(path)
+    except BaseException:
+        fd.close()
+        Path(fd.name).unlink(missing_ok=True)
+        raise
 
 
 def write_json(path: Path, payload: Dict[str, Any]) -> None:
