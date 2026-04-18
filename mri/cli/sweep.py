@@ -19,6 +19,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sweep_dir", help="Existing sweep directory to summarize")
     parser.add_argument("--downstream-config", help="Downstream top-1 promotion config YAML")
     parser.add_argument("--dry-run", action="store_true", help="Prepare configs without submitting jobs")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing sweep manifest")
     parser.add_argument("--poll-interval", type=int, default=30, help="Seconds between SLURM queue checks")
     args = parser.parse_args(argv)
 
@@ -27,7 +28,7 @@ def main(argv=None) -> int:
         raise ValueError("Provide exactly one of --config, --sweep_dir, or --downstream-config")
 
     if args.config:
-        run_sweep(config_path=Path(args.config), dry_run=args.dry_run, poll_interval=args.poll_interval)
+        run_sweep(config_path=Path(args.config), dry_run=args.dry_run, force=args.force, poll_interval=args.poll_interval)
         return 0
 
     if args.downstream_config:

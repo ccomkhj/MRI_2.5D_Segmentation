@@ -7,20 +7,13 @@ from typing import Any, Dict, List
 import copy
 import os
 import shutil
-import subprocess
 import time
 
-import yaml
-
-from mri.config.loader import load_config
+from mri.config.loader import load_config, load_yaml, set_nested_value
 from mri.data.index_builders import load_split_file
 from mri.experiments.runtime import load_run_manifests, utc_now_iso, write_json, write_yaml
+from mri.experiments.slurm import active_job_ids, submit_slurm_job
 from mri.experiments.sweep import run_sweep
-
-
-def _load_yaml(path: Path) -> Dict[str, Any]:
-    with path.open() as handle:
-        return yaml.safe_load(handle) or {}
 
 
 def _resolve_path(base_path: Path, value: str | Path) -> Path:
@@ -32,16 +25,6 @@ def _resolve_path(base_path: Path, value: str | Path) -> Path:
 
 def _relative_path(from_dir: Path, target: Path) -> str:
     return str(Path(os.path.relpath(target, from_dir)))
-
-
-def _set_nested_value(payload: Dict[str, Any], dotted_key: str, value: Any) -> None:
-    cursor = payload
-    parts = dotted_key.split(".")
-    for part in parts[:-1]:
-        if part not in cursor or not isinstance(cursor[part], dict):
-            cursor[part] = {}
-        cursor = cursor[part]
-    cursor[parts[-1]] = value
 
 
 def _resolve_manifest_path(manifest: Dict[str, Any], value: str | None) -> Path | None:
@@ -87,23 +70,6 @@ def _select_top_segmentation_run(results_root: Path) -> Dict[str, Any]:
     return manifests[0]
 
 
-def _active_job_ids(job_ids: List[str]) -> List[str]:
-    if not job_ids or shutil.which("squeue") is None:
-        return []
-    completed = subprocess.run(
-        ["squeue", "-h", "-j", ",".join(job_ids), "-o", "%A"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-
-
-def _submit_slurm_job(command: List[str]) -> str:
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    return completed.stdout.strip().split(";", maxsplit=1)[0]
-
-
 def _non_empty_split_names(split_file: Path) -> List[str]:
     splits = load_split_file(split_file)
     names = [name for name, cases in splits.items() if cases]
@@ -125,7 +91,7 @@ def run_downstream_promotion(
     dry_run: bool = False,
     poll_interval: int = 30,
 ) -> Dict[str, Any]:
-    stage_cfg = _load_yaml(config_path)
+    stage_cfg = load_yaml(config_path)
     required_keys = {"name", "segmentation_results_root", "classification_sweep_config"}
     missing = sorted(required_keys.difference(stage_cfg))
     if missing:
@@ -147,7 +113,7 @@ def run_downstream_promotion(
 
     segmentation_results_root = _resolve_path(config_path, stage_cfg["segmentation_results_root"])
     classification_sweep_config_path = _resolve_path(config_path, stage_cfg["classification_sweep_config"])
-    classification_sweep_cfg = _load_yaml(classification_sweep_config_path)
+    classification_sweep_cfg = load_yaml(classification_sweep_config_path)
     base_classification_config_path = _resolve_path(classification_sweep_config_path, classification_sweep_cfg["base_config"])
     base_classification_cfg = load_config(base_classification_config_path)
 
@@ -251,11 +217,11 @@ def run_downstream_promotion(
         }
         if not dry_run:
             while True:
-                active_jobs = _active_job_ids(submitted_jobs)
+                active_jobs = active_job_ids(submitted_jobs)
                 if len(active_jobs) < max_concurrent_jobs:
                     break
                 time.sleep(poll_interval)
-            job_id = _submit_slurm_job(command)
+            job_id = submit_slurm_job(command)
             submitted_jobs.append(job_id)
             job_record["job_id"] = job_id
         stage_manifest["inference_jobs"].append(job_record)
@@ -263,7 +229,7 @@ def run_downstream_promotion(
         write_json(manifest_path, stage_manifest)
 
     if submitted_jobs:
-        while _active_job_ids(submitted_jobs):
+        while active_job_ids(submitted_jobs):
             time.sleep(poll_interval)
 
     generated_classification_sweep = copy.deepcopy(classification_sweep_cfg)

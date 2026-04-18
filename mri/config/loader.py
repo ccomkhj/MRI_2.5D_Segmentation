@@ -35,9 +35,24 @@ def _deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any
     return base
 
 
-def _load_yaml(path: Path) -> Dict[str, Any]:
+def load_yaml(path: Path) -> Dict[str, Any]:
     with path.open() as f:
         return yaml.safe_load(f) or {}
+
+
+# Keep private alias for internal use within this module.
+_load_yaml = load_yaml
+
+
+def set_nested_value(payload: Dict[str, Any], dotted_key: str, value: Any) -> None:
+    """Set a value in a nested dict using a dotted key path (e.g. ``'a.b.c'``)."""
+    cursor = payload
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        if part not in cursor or not isinstance(cursor[part], dict):
+            cursor[part] = {}
+        cursor = cursor[part]
+    cursor[parts[-1]] = value
 
 
 def _load_user_config(path: Path, seen: set[Path]) -> Dict[str, Any]:

@@ -18,7 +18,7 @@ from mri.config.loader import load_config
 from mri.data.metadata import load_metadata
 from mri.data.index_builders import load_split_file, build_segmentation_index, build_classification_index
 from mri.data.datasets.segmentation import SegmentationDataset
-from mri.data.datasets.classification import ClassificationDataset, find_missing_segmentation_predictions
+from mri.data.datasets.classification import ClassificationDataset, validate_classification_inputs
 from mri.experiments.runtime import build_run_manifest, finalize_run_manifest, write_json, write_yaml
 from mri.models import create_segmentation_model, create_classification_model
 from mri.training.trainer import resolve_device
@@ -26,26 +26,8 @@ from mri.inference.segmentation import run_segmentation_inference
 from mri.inference.classification import run_classification_inference
 
 
-def _validate_classification_inputs(seg_pred_dir: str | None, case_ids: list[str], context: str) -> None:
-    if not seg_pred_dir:
-        raise ValueError(f"data.seg_pred_dir must be set for {context}.")
-
-    missing = find_missing_segmentation_predictions(seg_pred_dir, case_ids)
-    if not missing:
-        return
-
-    preview = ", ".join(missing[:5])
-    extra = len(missing) - min(len(missing), 5)
-    suffix = f", ... (+{extra} more)" if extra > 0 else ""
-    raise FileNotFoundError(
-        f"Missing segmentation predictions for {len(missing)} case(s) in {seg_pred_dir} while preparing {context}: "
-        f"{preview}{suffix}\n"
-        "Run segmentation inference first to populate that directory."
-    )
-
-
 def _load_checkpoint(model: torch.nn.Module, checkpoint_path: str | Path, device: torch.device) -> None:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     state = checkpoint.get("model", checkpoint)
     model.load_state_dict(state)
 
@@ -68,7 +50,7 @@ def _build_dataloader(cfg: Dict[str, Any], task_name: str, split_key: str):
 
     if task_name == "classification":
         split_index = build_classification_index(meta, splits[split_key])
-        _validate_classification_inputs(
+        validate_classification_inputs(
             cfg["data"].get("seg_pred_dir"),
             [record["case_id"] for record in split_index],
             f"classification inference split '{split_key}'",

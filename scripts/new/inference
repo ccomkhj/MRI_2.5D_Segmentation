@@ -12,11 +12,14 @@
 #SBATCH --account=ebrains-0000006
 
 # ============================================================================
-# Native HPC inference launcher (no Docker/Singularity)
+# HPC inference launcher (Singularity or native)
 # ============================================================================
 # Works in both modes:
 #   1) Direct run: bash scripts/new/inference [args...]
 #   2) SLURM run:  sbatch scripts/new/inference [args...]
+#
+# Set SIF_IMAGE in .env to run inside a Singularity container.
+# Without SIF_IMAGE, runs natively (requires torch in PATH).
 #
 # Examples:
 #   bash scripts/new/inference --config mri/config/task/segmentation.yaml --split test
@@ -152,26 +155,42 @@ if [[ ${HAS_OUTPUT} -eq 0 ]]; then
     PASS_ARGS+=("--output_dir" "${PREDICTIONS_DIR}")
 fi
 
-CMD=("${PYTHON_BIN}" "mri/cli/infer.py" "--config" "${CONFIG}" "--split" "${SPLIT}" "${PASS_ARGS[@]}")
+PYTHON_CMD=("${PYTHON_BIN}" "mri/cli/infer.py" "--config" "${CONFIG}" "--split" "${SPLIT}" "${PASS_ARGS[@]}")
+
+# Singularity support
+SIF_IMAGE="${SIF_IMAGE:-}"
+SIF_EXTRA_BINDS="${SIF_EXTRA_BINDS:-}"
+
+if [[ -n "${SIF_IMAGE}" ]]; then
+    if [[ ! -f "${SIF_IMAGE}" ]]; then
+        echo "ERROR: SIF_IMAGE not found: ${SIF_IMAGE}"
+        exit 1
+    fi
+    BIND_PATHS="${PROJECT_DIR}:${PROJECT_DIR}"
+    [[ "${DATA_DIR}" != "${PROJECT_DIR}"* ]] && BIND_PATHS+=",${DATA_DIR}:${DATA_DIR}"
+    [[ "${CHECKPOINT_DIR}" != "${PROJECT_DIR}"* ]] && BIND_PATHS+=",${CHECKPOINT_DIR}:${CHECKPOINT_DIR}"
+    [[ "${PREDICTIONS_DIR}" != "${PROJECT_DIR}"* ]] && BIND_PATHS+=",${PREDICTIONS_DIR}:${PREDICTIONS_DIR}"
+    [[ "${WANDB_DIR}" != "${PROJECT_DIR}"* ]] && BIND_PATHS+=",${WANDB_DIR}:${WANDB_DIR}"
+    [[ -n "${SIF_EXTRA_BINDS}" ]] && BIND_PATHS+=",${SIF_EXTRA_BINDS}"
+    CMD=(singularity exec --nv --bind "${BIND_PATHS}" --pwd "${PROJECT_DIR}" "${SIF_IMAGE}" "${PYTHON_CMD[@]}")
+else
+    CMD=("${PYTHON_CMD[@]}")
+fi
 
 echo "============================================================================"
-echo "MRI Inference (Native HPC)"
+echo "MRI Inference"
 echo "Project:    ${PROJECT_DIR}"
 echo "Python:     ${PYTHON_BIN}"
 echo "Config:     ${CONFIG}"
 echo "Split:      ${SPLIT}"
-echo "Mode:       mri/cli"
 echo "Data dir:   ${DATA_DIR}"
 echo "Checkpoints:${CHECKPOINT_DIR}"
 echo "Predictions:${PREDICTIONS_DIR}"
 echo "MPL config: ${MPLCONFIGDIR}"
+echo "SIF image:  ${SIF_IMAGE:-<native>}"
 echo "SLURM Job:  ${SLURM_JOB_ID:-local}"
 echo "Command:    ${CMD[*]}"
 echo "============================================================================"
-
-if command -v nvidia-smi &> /dev/null; then
-    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || true
-fi
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
     echo "DRY RUN: command not executed."

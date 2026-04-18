@@ -47,6 +47,25 @@ def find_missing_segmentation_predictions(
     return [case_id for case_id in unique_case_ids if not has_segmentation_predictions(seg_pred_dir, case_id)]
 
 
+def validate_classification_inputs(seg_pred_dir: str | None, case_ids: list[str], context: str) -> None:
+    """Raise if *seg_pred_dir* is unset or missing predictions for any *case_ids*."""
+    if not seg_pred_dir:
+        raise ValueError(f"data.seg_pred_dir must be set for {context}.")
+
+    missing = find_missing_segmentation_predictions(seg_pred_dir, case_ids)
+    if not missing:
+        return
+
+    preview = ", ".join(missing[:5])
+    extra = len(missing) - min(len(missing), 5)
+    suffix = f", ... (+{extra} more)" if extra > 0 else ""
+    raise FileNotFoundError(
+        f"Missing segmentation predictions for {len(missing)} case(s) in {seg_pred_dir} while preparing {context}: "
+        f"{preview}{suffix}\n"
+        "Run segmentation inference first to populate that directory."
+    )
+
+
 class ClassificationDataset(Dataset):
     def __init__(
         self,

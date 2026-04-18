@@ -136,7 +136,7 @@ def _build_dataloaders(cfg: Dict[str, Any], task_name: str):
                 "--output data/splits/2026-03-08.yaml"
             )
 
-        _validate_classification_inputs(
+        validate_classification_inputs(
             cfg["data"].get("seg_pred_dir"),
             [record["case_id"] for record in [*train_index, *val_index]],
             "classification training",
