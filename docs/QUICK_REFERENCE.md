@@ -11,7 +11,7 @@ pip install -r requirements.txt
 ## Prepare Splits
 
 ```bash
-python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/2026-03-08.yaml
+python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/<YYYY-MM-DD>.yaml
 ```
 
 ## Train

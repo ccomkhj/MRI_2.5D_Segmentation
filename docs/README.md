@@ -19,12 +19,15 @@ The root [README.md](../README.md) is the project overview. Use the guides below
 - [data.md](data.md): dataset import, validation, and repository-local data contract
 - [splits.md](splits.md): downstream-aware split generation and split summary artifacts
 - [configuration.md](configuration.md): layered YAML config composition and reusable config structure
+- [models.md](models.md): registered model families, where their presets live, what `model.params` keys they accept
 - [train.md](train.md): local training and native HPC training wrappers
 - [inference.md](inference.md): local inference and native HPC inference wrappers
+- [dicom_wrapper.md](dicom_wrapper.md): one-call wrapper that takes a vendor DICOM zip and emits segmentation outputs + a self-contained HTML report
 - [sweeps.md](sweeps.md): segmentation sweeps and downstream top-1 promotion
 - [research.md](research.md): end-to-end local research workflow with generated configs and manifests
 - [smoke.md](smoke.md): small CPU smoke workflows for 3-case and 5-case validation
 - [paper_run_checklist.md](paper_run_checklist.md): checklist for real non-smoke research runs
+- [current_leader.md](current_leader.md): point-in-time snapshot of the best segmentation run (refresh after each sweep)
 
 ## Supporting Docs
 

@@ -31,7 +31,7 @@ extends:
 
 data:
   metadata: data/aligned_v2/metadata.json
-  split_file: data/splits/2026-03-08.yaml
+  split_file: data/splits/<YYYY-MM-DD>.yaml
   stack_depth: 5
 ```
 
