@@ -9,14 +9,14 @@ The current recommended label space is `downstream_5class`, not the raw metadata
 ```bash
 python tools/generate_splits.py \
   --metadata data/aligned_v2/metadata.json \
-  --output data/splits/2026-03-15.yaml \
+  --output data/splits/<YYYY-MM-DD>.yaml \
   --label-space downstream_5class
 ```
 
 The command also writes:
 
 ```text
-data/splits/2026-03-15_summary.json
+data/splits/<YYYY-MM-DD>_summary.json
 ```
 
 ## What The Summary Contains
@@ -37,7 +37,7 @@ Override the default `0.7,0.15,0.15` split ratios:
 ```bash
 python tools/generate_splits.py \
   --metadata data/aligned_v2/metadata.json \
-  --output data/splits/2026-03-15.yaml \
+  --output data/splits/<YYYY-MM-DD>.yaml \
   --ratios 0.8,0.1,0.1 \
   --seed 20260315 \
   --label-space downstream_5class
@@ -48,7 +48,7 @@ Disable stratification only if you have a specific reason:
 ```bash
 python tools/generate_splits.py \
   --metadata data/aligned_v2/metadata.json \
-  --output data/splits/2026-03-15.yaml \
+  --output data/splits/<YYYY-MM-DD>.yaml \
   --no-stratify
 ```
 

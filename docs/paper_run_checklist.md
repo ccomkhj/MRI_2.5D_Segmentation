@@ -43,7 +43,7 @@ Record:
 ```bash
 python tools/generate_splits.py \
   --metadata data/aligned_v2/metadata.json \
-  --output data/splits/2026-03-15.yaml \
+  --output data/splits/<YYYY-MM-DD>.yaml \
   --label-space downstream_5class
 ```
 
@@ -160,7 +160,7 @@ For new configs or a new machine, run:
 python mri/cli/research.py \
   --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 \
   --dest-data data/aligned_v2 \
-  --split-file data/splits/2026-03-15.yaml \
+  --split-file data/splits/<YYYY-MM-DD>.yaml \
   --disable-wandb \
   --dry-run
 ```

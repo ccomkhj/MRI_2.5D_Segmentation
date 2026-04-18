@@ -15,7 +15,7 @@ Utility scripts live under `tools/`. The modular train and inference path is `mr
 
 ```bash
 python tools/dataset/import_tcia_aligned.py --source /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest data/aligned_v2 --mode link
-python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/2026-03-15.yaml --label-space downstream_5class
+python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/<YYYY-MM-DD>.yaml --label-space downstream_5class
 bash scripts/new/research-smoke --dry-run
 python tools/preprocessing/dicom_converter.py --all
 python tools/preprocessing/process_overlay_aligned.py

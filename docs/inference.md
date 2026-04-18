@@ -85,29 +85,9 @@ If the target probability is weak, the pipeline falls back to the prostate proba
 
 This is the main reason a stronger segmentation model directly helps downstream classification.
 
-## Current Segmentation Summary
+## Current Segmentation Leader
 
-Based on [best_jobs.html](../checkpoints/reports/best_jobs.html), generated on `2026-04-04`:
-
-- `81` segmentation jobs were included in the leaderboard
-- best `val/precision_target`: `seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons`
-- that run reached `val/precision_target = 0.2603` at epoch `65`
-- the same run reached `val/threshold_sweep_target_best_dice = 0.3216`
-- recipe summary: `SimpleUNet`, `stack_depth=5`, positive-only pool, geometric augmentation, gentle modality dropout, light target weighting, conservative `OneCycle`
-
-Exact config of that current precision leader:
-
-```text
-checkpoints/autopilot/seg-apr04-autopilot-debug/configs/wave03/01-simple-s5-prec-md1-w2-cons.yaml
-```
-
-There is also a stronger threshold-sweep Dice leader:
-
-- run: `seg-auto-seg-apr04-autopilot-debug-w02-r11-dynu-s5-prec-md0-w1-cons`
-- best `val/threshold_sweep_target_best_dice = 0.4025`
-- but its raw `val/precision_target` is lower at `0.1030`
-
-So for downstream experiments, the natural first checkpoint to try is the current precision leader, and the threshold-sweep Dice leader is a good comparison if the ROI looks too tight or too loose.
+For the latest segmentation leaderboard snapshot (best run, recipe, metrics), see [current_leader.md](current_leader.md). That file is refreshed after each sweep so this guide stays evergreen.
 
 ## How We Train And Run The Full Pipeline
 
@@ -119,11 +99,10 @@ Baseline training:
 python mri/cli/train.py --config mri/config/task/segmentation.yaml
 ```
 
-If we want to reproduce the current precision leader exactly:
+To reproduce a specific leader run, use the config recorded next to its checkpoint (see [current_leader.md](current_leader.md) for the current pick):
 
 ```bash
-python mri/cli/train.py \
-  --config checkpoints/autopilot/seg-apr04-autopilot-debug/configs/wave03/01-simple-s5-prec-md1-w2-cons.yaml
+python mri/cli/train.py --config <leader_config.yaml>
 ```
 
 ### 2. Run Segmentation Inference On `train`, `val`, And `test`
@@ -133,9 +112,9 @@ Use one shared output root, because classification expects a single `data.seg_pr
 Important: the config must match the checkpoint architecture. For example, a `SimpleUNet` checkpoint must not be loaded with the baseline `segmentation.yaml` `SegResNet` config.
 
 ```bash
-SEG_CFG=checkpoints/autopilot/seg-apr04-autopilot-debug/configs/wave03/01-simple-s5-prec-md1-w2-cons.yaml
-SEG_CKPT=checkpoints/seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons/seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons_best.pt
-SEG_OUT=data/seg_preds/seg_apr04_precision_leader
+SEG_CFG=<path/to/leader_config.yaml>          # the config used to train the seg checkpoint
+SEG_CKPT=<path/to/<seg_run>_best.pt>          # the segmentation checkpoint
+SEG_OUT=data/seg_preds/<seg_run_label>        # shared output root for train/val/test
 
 for split in train val test; do
   python mri/cli/infer.py \
@@ -143,7 +122,7 @@ for split in train val test; do
     --split "$split" \
     --checkpoint "$SEG_CKPT" \
     --output_dir "$SEG_OUT" \
-    --run_name "seg_apr04_precision_leader_${split}"
+    --run_name "<seg_run_label>_${split}"
 done
 ```
 
@@ -172,10 +151,10 @@ If you already have both trained checkpoints and want to skip retraining, use:
 
 ```bash
 python mri/cli/pipeline_infer.py \
-  --seg-config checkpoints/autopilot/seg-apr04-autopilot-debug/configs/wave03/01-simple-s5-prec-md1-w2-cons.yaml \
-  --seg-checkpoint checkpoints/seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons/seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons_best.pt \
+  --seg-config <path/to/leader_config.yaml> \
+  --seg-checkpoint <path/to/<seg_run>_best.pt> \
   --cls-config mri/config/task/classification.yaml \
-  --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt \
+  --cls-checkpoint checkpoints/cls/<cls_run>/<cls_run>_best.pt \
   --cls-inference-split test
 ```
 
@@ -185,17 +164,6 @@ This runner:
 - writes segmentation probabilities under one shared output root
 - generates a temporary classification override config with `data.seg_pred_dir` pointing at those fresh predictions
 - runs classification inference without starting any training job
-
-Native HPC wrapper:
-
-```bash
-bash scripts/new/pipeline-inference \
-  --seg-config checkpoints/autopilot/seg-apr04-autopilot-debug/configs/wave03/01-simple-s5-prec-md1-w2-cons.yaml \
-  --seg-checkpoint checkpoints/seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons/seg-auto-seg-apr04-autopilot-debug-w03-r01-simple-s5-prec-md1-w2-cons_best.pt \
-  --cls-config mri/config/task/classification.yaml \
-  --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt \
-  --dry-run
-```
 
 ## What Segmentation Inference Writes
 

@@ -8,11 +8,13 @@ This repository uses a config-driven modular architecture for prostate MRI segme
 - `mri/cli/pipeline_infer.py`
 - `mri/cli/sweep.py`
 - `mri/cli/research.py`
+- `mri/service/pipeline.py` (DICOM zip → segmentation → HTML report wrapper — part of the `mri/` package)
 - `scripts/new/train`
 - `scripts/new/inference`
-- `scripts/new/pipeline-inference`
 
-Compatibility wrappers exist in `service/train.py` and `service/inference.py`, but new work should use the `mri/cli/*` and `scripts/new/*` entrypoints.
+> **Naming note.** Two unrelated `service/` directories exist:
+> - `mri/service/` — modern, part of the `mri/` package; contains `pipeline.py` (the DICOM wrapper above). Use this.
+> - `service/` (top-level) — legacy compatibility wrappers (`service/train.py`, `service/inference.py`) for older scripts. Do not use for new work; prefer `mri/cli/*` and `scripts/new/*`.
 
 ## Documentation
 
@@ -27,6 +29,7 @@ Recommended starting points:
 - [docs/configuration.md](docs/configuration.md): layered YAML config composition
 - [docs/train.md](docs/train.md): segmentation-first training workflow
 - [docs/inference.md](docs/inference.md): segmentation and classification inference
+- [docs/dicom_wrapper.md](docs/dicom_wrapper.md): single-call DICOM zip → segmentation → HTML report
 - [docs/research.md](docs/research.md): end-to-end local research runner
 - [docs/smoke.md](docs/smoke.md): short CPU smoke workflows
 - [docs/sweeps.md](docs/sweeps.md): sweep and downstream promotion flow
@@ -79,27 +82,46 @@ mri/
   cli/
     train.py
     infer.py
+    pipeline_infer.py
     sweep.py
     research.py
   config/
     defaults.yaml
+    loader.py
     task/
       segmentation.yaml
       classification.yaml
+      segmentation_smoke.yaml
+      classification_smoke.yaml
+    preset/
+    model/
+    augment/
+    sweep/
   data/
   models/
   tasks/
   training/
   inference/
+  transforms/
+  experiments/
+  service/
+    pipeline.py
 
 scripts/
   new/
     train
     inference
-    pipeline-inference
+    research-smoke
+
+service/                 # legacy compatibility wrappers (do not use for new work)
+  train.py
+  inference.py
 
 tools/
   generate_splits.py
+  dataset/
+  preprocessing/
+  validation/
 ```
 
 ## Environment Setup
@@ -123,7 +145,7 @@ Use `--mode copy` if you need a physical copy instead of a symlink.
 Generate split YAMLs from metadata:
 
 ```bash
-python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/2026-03-15.yaml --label-space downstream_5class
+python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/<YYYY-MM-DD>.yaml --label-space downstream_5class
 ```
 
 That command also writes a JSON summary next to the split file with per-split label histograms.
@@ -174,12 +196,11 @@ For the checkpoint-driven two-stage inference path without retraining:
 
 ```bash
 python mri/cli/pipeline_infer.py --seg-checkpoint checkpoints/seg/<run>/<run>_best.pt --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt --dry-run
-bash scripts/new/pipeline-inference --seg-checkpoint checkpoints/seg/<run>/<run>_best.pt --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt --dry-run
 ```
 
 ## Native HPC Script Behavior
 
-`scripts/new/train`, `scripts/new/inference`, and `scripts/new/pipeline-inference`:
+`scripts/new/train` and `scripts/new/inference`:
 - run directly on node Python environment
 - support both direct run and `sbatch`
 - auto-load `.env` if present
@@ -219,8 +240,8 @@ That downstream flow:
 Run the full local workflow from aligned data import through downstream classification:
 
 ```bash
-python mri/cli/research.py --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest-data data/aligned_v2 --split-file data/splits/2026-03-15.yaml --disable-wandb --dry-run
-python mri/cli/research.py --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest-data data/aligned_v2 --split-file data/splits/2026-03-15.yaml --disable-wandb
+python mri/cli/research.py --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest-data data/aligned_v2 --split-file data/splits/<YYYY-MM-DD>.yaml --disable-wandb --dry-run
+python mri/cli/research.py --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest-data data/aligned_v2 --split-file data/splits/<YYYY-MM-DD>.yaml --disable-wandb
 ```
 
 That workflow:
@@ -260,4 +281,4 @@ Task configs are expected to define:
 
 - This README reflects only the new architecture.
 - For production runs, prefer `scripts/new/*` on HPC and `mri/cli/*` locally.
-- Use `service/train.py` and `service/inference.py` only for compatibility with older scripts.
+- Use the top-level `service/train.py` and `service/inference.py` only for compatibility with older scripts. Do not confuse this with `mri/service/pipeline.py`, which is the modern DICOM wrapper.

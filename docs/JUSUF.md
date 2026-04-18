@@ -20,13 +20,13 @@ The pipeline expects an `aligned_v2` dataset with a `metadata.json` and per-case
         mask_prostate/
         mask_target1/
     splits/
-      2026-03-08.yaml   # frozen paper split (train/val/test case IDs)
+      <YYYY-MM-DD>.yaml   # frozen paper split (train/val/test case IDs)
 ```
 
 **How to get data onto JUSUF:**
 1. Transfer the `aligned_v2/` directory to the cluster (e.g. via `rsync`).
 2. Place or symlink it at `data/aligned_v2/` relative to the repo root.
-3. Ensure `data/splits/2026-03-08.yaml` (or your dated split file) is committed in the repo.
+3. Ensure `data/splits/<YYYY-MM-DD>.yaml` (or your dated split file) is committed in the repo.
 
 **Generate a new split (if needed):**
 ```bash

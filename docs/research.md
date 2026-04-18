@@ -17,7 +17,7 @@ It is the right entrypoint when you want one command that handles:
 python mri/cli/research.py \
   --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 \
   --dest-data data/aligned_v2 \
-  --split-file data/splits/2026-03-15.yaml \
+  --split-file data/splits/<YYYY-MM-DD>.yaml \
   --disable-wandb \
   --dry-run
 ```
@@ -36,7 +36,7 @@ It does not launch training or inference.
 python mri/cli/research.py \
   --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 \
   --dest-data data/aligned_v2 \
-  --split-file data/splits/2026-03-15.yaml \
+  --split-file data/splits/<YYYY-MM-DD>.yaml \
   --disable-wandb
 ```
 

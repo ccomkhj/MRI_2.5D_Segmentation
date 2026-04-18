@@ -18,7 +18,7 @@ Use this when you already have:
 Recommended first step:
 
 ```bash
-bash scripts/new/pipeline-inference \
+python mri/cli/pipeline_infer.py \
   --seg-config <segmentation-config.yaml> \
   --seg-checkpoint <segmentation-best.pt> \
   --cls-config <classification-config.yaml> \
@@ -31,7 +31,7 @@ bash scripts/new/pipeline-inference \
 If that looks correct, run the real command:
 
 ```bash
-bash scripts/new/pipeline-inference \
+python mri/cli/pipeline_infer.py \
   --seg-config <segmentation-config.yaml> \
   --seg-checkpoint <segmentation-best.pt> \
   --cls-config <classification-config.yaml> \
@@ -50,7 +50,7 @@ What this does:
 You need these items:
 
 - MRI data prepared under `data/aligned_v2`
-- a split file such as `data/splits/2026-03-08.yaml`
+- a split file such as `data/splits/<YYYY-MM-DD>.yaml`
 - a segmentation config that matches the segmentation checkpoint
 - a classification config that matches the classification checkpoint
 
@@ -82,7 +82,7 @@ The default classification split is `test`.
 If you want a different split:
 
 ```bash
-bash scripts/new/pipeline-inference \
+python mri/cli/pipeline_infer.py \
   --seg-config <segmentation-config.yaml> \
   --seg-checkpoint <segmentation-best.pt> \
   --cls-config <classification-config.yaml> \
@@ -101,7 +101,7 @@ Use the full research workflow instead of the checkpoint-only workflow:
 python mri/cli/research.py \
   --source-data /path/to/aligned_v2 \
   --dest-data data/aligned_v2 \
-  --split-file data/splits/2026-03-08.yaml \
+  --split-file data/splits/<YYYY-MM-DD>.yaml \
   --disable-wandb \
   --dry-run
 ```
@@ -139,7 +139,7 @@ This full workflow:
 If you already have trained models, use:
 
 ```bash
-bash scripts/new/pipeline-inference ...
+python mri/cli/pipeline_infer.py ...
 ```
 
 If you need to train new models, use:
