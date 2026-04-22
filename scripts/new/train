@@ -12,14 +12,14 @@
 #SBATCH --account=ebrains-0000006
 
 # ============================================================================
-# HPC training launcher (Singularity or native)
+# HPC training launcher with automatic Singularity/Apptainer handoff
 # ============================================================================
 # Works in both modes:
 #   1) Direct run: bash scripts/new/train [args...]
 #   2) SLURM run:  sbatch scripts/new/train [args...]
 #
-# Set SIF_IMAGE in .env to run inside a Singularity container.
-# Without SIF_IMAGE, runs natively (requires torch in PATH).
+# When a container runtime and image are available, this wrapper re-executes
+# itself inside the training image before launching Python.
 #
 # Examples:
 #   bash scripts/new/train --config mri/config/task/segmentation.yaml
@@ -33,12 +33,101 @@ if [[ -z "${BASH_VERSION:-}" ]]; then
     exec bash "$0" "$@"
 fi
 
-if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}" ]]; then
-    PROJECT_DIR="${SLURM_SUBMIT_DIR}"
-else
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-fi
+is_project_dir() {
+    local candidate="${1:-}"
+    [[ -n "${candidate}" && -d "${candidate}" && -f "${candidate}/mri/cli/train.py" && -f "${candidate}/scripts/new/train" ]]
+}
+
+resolve_slurm_command_path() {
+    local job_line command_path
+
+    if [[ -z "${SLURM_JOB_ID:-}" ]] || ! command -v scontrol &> /dev/null; then
+        return 1
+    fi
+
+    job_line="$(scontrol show job -o "${SLURM_JOB_ID}" 2> /dev/null || true)"
+    if [[ -z "${job_line}" ]]; then
+        return 1
+    fi
+
+    command_path="$(
+        awk '
+            {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^Command=/) {
+                        sub(/^Command=/, "", $i)
+                        print $i
+                        exit
+                    }
+                }
+            }
+        ' <<< "${job_line}"
+    )"
+
+    if [[ -z "${command_path}" ]]; then
+        return 1
+    fi
+
+    if [[ "${command_path}" != /* && -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+        command_path="${SLURM_SUBMIT_DIR}/${command_path}"
+    fi
+
+    echo "${command_path}"
+}
+
+resolve_project_dir() {
+    local candidate script_dir command_path
+
+    if [[ -n "${MRI_TRAIN_PROJECT_DIR:-}" ]]; then
+        candidate="$(cd "${MRI_TRAIN_PROJECT_DIR}" 2> /dev/null && pwd || true)"
+        if is_project_dir "${candidate}"; then
+            echo "${candidate}"
+            return 0
+        fi
+        echo "ERROR: MRI_TRAIN_PROJECT_DIR is not a valid project root: ${MRI_TRAIN_PROJECT_DIR}" >&2
+        return 1
+    fi
+
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        command_path="$(resolve_slurm_command_path || true)"
+        if [[ -n "${command_path}" ]]; then
+            candidate="$(cd "$(dirname "${command_path}")/../.." 2> /dev/null && pwd || true)"
+            if is_project_dir "${candidate}"; then
+                echo "${candidate}"
+                return 0
+            fi
+        fi
+
+        if is_project_dir "${SLURM_SUBMIT_DIR:-}"; then
+            candidate="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+            echo "${candidate}"
+            return 0
+        fi
+    fi
+
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    candidate="$(cd "${script_dir}/../.." && pwd)"
+    if is_project_dir "${candidate}"; then
+        echo "${candidate}"
+        return 0
+    fi
+
+    echo "ERROR: Could not resolve the project directory for scripts/new/train." >&2
+    echo "Set MRI_TRAIN_PROJECT_DIR to the repository root if you are launching via SLURM from outside the repo." >&2
+    return 1
+}
+
+require_option_value() {
+    local option_name="$1"
+    local option_value="${2:-}"
+
+    if [[ -z "${option_value}" || "${option_value}" == --* ]]; then
+        echo "ERROR: ${option_name} requires a value."
+        exit 1
+    fi
+}
+
+PROJECT_DIR="$(resolve_project_dir)"
 
 cd "${PROJECT_DIR}" || {
     echo "ERROR: Cannot change to project directory: ${PROJECT_DIR}"
@@ -49,6 +138,72 @@ if [[ -f "${PROJECT_DIR}/.env" ]]; then
     set -a
     source "${PROJECT_DIR}/.env"
     set +a
+fi
+
+resolve_container_runtime() {
+    if command -v singularity &> /dev/null; then
+        echo "singularity"
+        return 0
+    fi
+    if command -v apptainer &> /dev/null; then
+        echo "apptainer"
+        return 0
+    fi
+    return 1
+}
+
+resolve_container_image() {
+    local project_parent image_dir candidate
+
+    project_parent="$(dirname "${PROJECT_DIR}")"
+    image_dir="${project_parent}/singularity_images"
+
+    for candidate in \
+        "${MRI_TRAIN_CONTAINER_IMAGE:-}" \
+        "${image_dir}/mri-train3.sif" \
+        "${image_dir}/mri-train2.sif" \
+        "${image_dir}/mri-train.sif"
+    do
+        if [[ -n "${candidate}" && -f "${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+MRI_TRAIN_USE_CONTAINER="${MRI_TRAIN_USE_CONTAINER:-auto}"
+if [[ -z "${MRI_TRAIN_IN_CONTAINER:-}" && "${MRI_TRAIN_USE_CONTAINER}" != "never" ]]; then
+    CONTAINER_RUNTIME="$(resolve_container_runtime || true)"
+    CONTAINER_IMAGE="$(resolve_container_image || true)"
+
+    if [[ -n "${CONTAINER_RUNTIME}" && -n "${CONTAINER_IMAGE}" ]]; then
+        BIND_ROOT="${MRI_TRAIN_BIND_ROOT:-$(dirname "${PROJECT_DIR}")}"
+        export MRI_TRAIN_IN_CONTAINER=1
+
+        echo "============================================================================"
+        echo "MRI Training (Singularity HPC)"
+        echo "Project:    ${PROJECT_DIR}"
+        echo "Runtime:    ${CONTAINER_RUNTIME}"
+        echo "Image:      ${CONTAINER_IMAGE}"
+        echo "Bind root:  ${BIND_ROOT}"
+        echo "SLURM Job:  ${SLURM_JOB_ID:-local}"
+        echo "============================================================================"
+
+        exec "${CONTAINER_RUNTIME}" exec \
+            --nv \
+            -B "${BIND_ROOT}:${BIND_ROOT}" \
+            --pwd "${PROJECT_DIR}" \
+            "${CONTAINER_IMAGE}" \
+            bash "${PROJECT_DIR}/scripts/new/train" "$@"
+    fi
+
+    if [[ "${MRI_TRAIN_USE_CONTAINER}" == "always" ]]; then
+        echo "ERROR: Container mode requested but no Singularity/Apptainer runtime or image was found."
+        echo "Set MRI_TRAIN_CONTAINER_IMAGE or place mri-train3.sif under $(dirname "${PROJECT_DIR}")/singularity_images."
+        exit 1
+    fi
 fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
@@ -79,6 +234,7 @@ PASS_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --config)
+            require_option_value "$1" "${2:-}"
             CONFIG="$2"
             HAS_CONFIG=1
             shift 2
@@ -88,15 +244,17 @@ while [[ $# -gt 0 ]]; do
             HAS_CONFIG=1
             shift
             ;;
-        --output_dir|--output_dir=*)
+        --output_dir|--output-dir)
+            require_option_value "$1" "${2:-}"
             HAS_OUTPUT_DIR=1
-            PASS_ARGS+=("$1")
-            if [[ "$1" == "--output_dir" && $# -gt 1 ]]; then
-                PASS_ARGS+=("$2")
-                shift 2
-            else
-                shift
-            fi
+            PASS_ARGS+=("--output_dir" "$2")
+            shift 2
+            ;;
+        --output_dir=*|--output-dir=*)
+            require_option_value "${1%%=*}" "${1#*=}"
+            HAS_OUTPUT_DIR=1
+            PASS_ARGS+=("--output_dir=${1#*=}")
+            shift
             ;;
         --dry-run)
             DRY_RUN=1

@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,9 +68,8 @@ class Recipe:
         return f"{model_alias}-s{self.stack_depth}-{primary_alias}-{mod_alias}-{weight_alias}-{sched_alias}"
 
 
-EXPLOITATION_SLOTS_PER_FAMILY = 3
-EXPLORATION_SLOTS_PER_WAVE = 6
-RECIPES_PER_WAVE = EXPLOITATION_SLOTS_PER_FAMILY * 2 + EXPLORATION_SLOTS_PER_WAVE
+DEFAULT_EXPLOITATION_SLOTS_PER_FAMILY = 3
+DEFAULT_EXPLORATION_SLOTS_PER_WAVE = 6
 EXPLORATION_METRIC_WEIGHTS = {
     "best_precision_target": 0.45,
     "best_threshold_sweep_target_best_dice": 0.45,
@@ -110,6 +111,48 @@ SWEEP_FAMILY_BASE = Recipe(
     scheduler="conservative",
 )
 
+CROSSOVER_FAMILY_BASE = Recipe(
+    model="dynunet",
+    stack_depth=5,
+    primary="precision",
+    moddrop="none",
+    weighting="gentle",
+    scheduler="conservative",
+)
+
+CADENCE_PRECISION_SLOTS = 2
+CADENCE_SWEEP_SLOTS = 2
+CADENCE_CROSSOVER_SLOTS = 1
+CADENCE_PLATEAU_LOOKBACK_WAVES = 3
+CADENCE_PLATEAU_MIN_PRECISION_GAIN = 0.0025
+CADENCE_PLATEAU_MIN_SWEEP_GAIN = 0.0075
+
+CADENCE_BOOTSTRAP_RECIPES: tuple[Recipe, ...] = (
+    Recipe("simple_unet", 5, "precision", "gentle", "gentle", "conservative"),
+    Recipe("simple_unet", 5, "precision", "gentle", "gentle", "standard"),
+    Recipe("dynunet", 7, "sweep", "strong", "none", "conservative"),
+    Recipe("dynunet", 7, "sweep", "gentle", "gentle", "conservative"),
+    Recipe("dynunet", 5, "precision", "gentle", "light", "conservative"),
+    Recipe("simple_unet", 5, "sweep", "strong", "light", "conservative"),
+)
+
+BREAKTHROUGH_BOOTSTRAP_RECIPES: tuple[Recipe, ...] = (
+    Recipe("simple_unet", 5, "sweep", "strong", "light", "conservative"),
+    Recipe("simple_unet", 7, "sweep", "none", "light", "standard"),
+    Recipe("simple_unet", 7, "precision", "strong", "light", "conservative"),
+    Recipe("dynunet", 7, "precision", "strong", "light", "conservative"),
+    Recipe("dynunet", 5, "sweep", "gentle", "light", "conservative"),
+)
+
+
+@dataclass(frozen=True)
+class CadenceSlotPlan:
+    precision_slots: int
+    sweep_slots: int
+    crossover_slots: int
+    breakthrough_slots: int
+    plateau: bool
+
 
 def _log(message: str) -> None:
     print(f"[{utc_now_iso()}] {message}", flush=True)
@@ -117,6 +160,31 @@ def _log(message: str) -> None:
 
 def _task_path(relative_path: str) -> str:
     return str((PROJECT_ROOT / relative_path).resolve())
+
+
+def _recipe_count(slots_per_family: int, exploration_slots: int) -> int:
+    return slots_per_family * 2 + exploration_slots
+
+
+def _parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _planned_cadence_wave_count(duration_hours: float, submit_interval_seconds: int) -> int:
+    duration_seconds = max(duration_hours, 0.0) * 3600.0
+    return max(1, math.ceil(duration_seconds / float(submit_interval_seconds)))
 
 
 def _base_config_for(recipe: Recipe) -> str:
@@ -450,6 +518,22 @@ def _matches_sweep_family(recipe: Recipe) -> bool:
     return recipe.model == "dynunet" and recipe.stack_depth == 7 and recipe.primary == "sweep"
 
 
+def _matches_crossover_family(recipe: Recipe) -> bool:
+    return recipe.model == "dynunet" and recipe.stack_depth == 5 and recipe.primary == "precision"
+
+
+def _family_signature(recipe: Recipe) -> tuple[str, int, str]:
+    return (recipe.model, recipe.stack_depth, recipe.primary)
+
+
+def _is_breakthrough_recipe(recipe: Recipe) -> bool:
+    return (
+        not _matches_precision_family(recipe)
+        and not _matches_sweep_family(recipe)
+        and not _matches_crossover_family(recipe)
+    )
+
+
 def _result_sort_key(item: dict[str, Any], mode: str) -> tuple[float, float, float]:
     if mode == "precision":
         return (
@@ -597,6 +681,54 @@ def _choose_unused_recipes(candidates: list[Recipe], blocked_keys: set[str], lim
     return selected
 
 
+def _choose_family_recipes(
+    candidates: list[Recipe],
+    blocked_keys: set[str],
+    limit: int,
+    *,
+    allow_repeats: bool,
+) -> list[Recipe]:
+    selected: list[Recipe] = []
+    selected_keys: set[str] = set()
+
+    for candidate in candidates:
+        if candidate.key() in blocked_keys:
+            continue
+        selected.append(candidate)
+        selected_keys.add(candidate.key())
+        blocked_keys.add(candidate.key())
+        if len(selected) >= limit:
+            return selected
+
+    if not allow_repeats:
+        return selected
+
+    for candidate in candidates:
+        if candidate.key() in selected_keys:
+            continue
+        selected.append(candidate)
+        selected_keys.add(candidate.key())
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _choose_recipe_with_repeats(
+    candidates: list[Recipe],
+    blocked_keys: set[str],
+    selected_keys: set[str],
+) -> Recipe | None:
+    for candidate in candidates:
+        if candidate.key() in blocked_keys or candidate.key() in selected_keys:
+            continue
+        return candidate
+
+    for candidate in candidates:
+        if candidate.key() not in selected_keys:
+            return candidate
+    return None
+
+
 def _precision_family_candidates(seed: Recipe) -> list[Recipe]:
     anchor = replace(seed, model="simple_unet", stack_depth=5, primary="precision")
     return _unique_recipe_candidates(
@@ -646,6 +778,63 @@ def _sweep_family_candidates(seed: Recipe) -> list[Recipe]:
     )
 
 
+def _crossover_family_candidates(seed: Recipe) -> list[Recipe]:
+    anchor = replace(seed, model="dynunet", stack_depth=5, primary="precision", scheduler="conservative")
+    return _unique_recipe_candidates(
+        [
+            anchor,
+            CROSSOVER_FAMILY_BASE,
+            replace(anchor, weighting=_next_weighting(anchor.weighting)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop), weighting=_next_weighting(anchor.weighting)),
+            replace(CROSSOVER_FAMILY_BASE, weighting="light"),
+            replace(CROSSOVER_FAMILY_BASE, moddrop="gentle"),
+            replace(CROSSOVER_FAMILY_BASE, moddrop="strong"),
+            replace(CROSSOVER_FAMILY_BASE, moddrop="strong", weighting="light"),
+            *[
+                Recipe("dynunet", 5, "precision", moddrop, weighting, "conservative")
+                for moddrop in MODDROP_LEVELS
+                for weighting in WEIGHTING_LEVELS
+            ],
+        ]
+    )
+
+
+def _breakthrough_family_candidates(seed: Recipe) -> list[Recipe]:
+    anchor = seed
+    if anchor.model == "dynunet":
+        anchor = replace(anchor, scheduler="conservative")
+
+    scheduler_values = SIMPLE_UNET_SCHEDULERS if anchor.model == "simple_unet" else ("conservative",)
+    full_grid = sorted(
+        [
+            Recipe(anchor.model, anchor.stack_depth, anchor.primary, moddrop, weighting, scheduler)
+            for scheduler in scheduler_values
+            for moddrop in MODDROP_LEVELS
+            for weighting in WEIGHTING_LEVELS
+        ],
+        key=lambda candidate: (
+            candidate.scheduler != anchor.scheduler,
+            _recipe_distance(candidate, anchor),
+            candidate.weighting == "none",
+            candidate.moddrop == "none",
+            candidate.slug(),
+        ),
+    )
+    candidates = _unique_recipe_candidates(
+        [
+            anchor,
+            replace(anchor, scheduler="conservative") if anchor.model == "simple_unet" else anchor,
+            replace(anchor, scheduler="standard") if anchor.model == "simple_unet" else anchor,
+            replace(anchor, weighting=_next_weighting(anchor.weighting)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop)),
+            replace(anchor, moddrop=_next_moddrop(anchor.moddrop), weighting=_next_weighting(anchor.weighting)),
+            *full_grid,
+        ]
+    )
+    return [candidate for candidate in candidates if _is_breakthrough_recipe(candidate)]
+
+
 def _exploration_recipe_pool() -> list[Recipe]:
     pool: list[Recipe] = []
     for scheduler in SIMPLE_UNET_SCHEDULERS:
@@ -662,7 +851,7 @@ def _exploration_recipe_pool() -> list[Recipe]:
                     pool.append(Recipe("dynunet", stack_depth, primary, moddrop, weighting, "conservative"))
 
     unique = _unique_recipe_candidates(pool)
-    filtered = [recipe for recipe in unique if not _matches_precision_family(recipe) and not _matches_sweep_family(recipe)]
+    filtered = [recipe for recipe in unique if _is_breakthrough_recipe(recipe)]
     return sorted(filtered, key=lambda recipe: recipe.slug())
 
 
@@ -693,6 +882,7 @@ def _select_exploration_recipes(
         if candidate.key() not in blocked_keys
         and not _matches_precision_family(candidate)
         and not _matches_sweep_family(candidate)
+        and not _matches_crossover_family(candidate)
     ]
 
     selected: list[Recipe] = []
@@ -715,12 +905,167 @@ def _select_exploration_recipes(
     return selected
 
 
+def _select_breakthrough_seed_recipes(
+    results: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[Recipe]:
+    if limit <= 0:
+        return []
+
+    family_best: dict[tuple[str, int, str], tuple[float, dict[str, Any], Recipe]] = {}
+    metric_maxima = _completed_wave_metric_maxima(results)
+    for row in results:
+        fields = row.get("recipe", {}).get("fields")
+        if not fields:
+            continue
+        recipe = _recipe_from_fields(fields)
+        if not _is_breakthrough_recipe(recipe):
+            continue
+        signature = _family_signature(recipe)
+        score = _blended_result_score(row, metric_maxima)
+        previous = family_best.get(signature)
+        if previous is None or score > previous[0]:
+            family_best[signature] = (score, row, recipe)
+
+    ranked = sorted(
+        family_best.values(),
+        key=lambda item: (
+            item[0],
+            item[1].get("best_precision_target") or float("-inf"),
+            item[1].get("best_threshold_sweep_target_best_dice") or float("-inf"),
+            item[1].get("best_dice_target") or float("-inf"),
+            item[2].slug(),
+        ),
+        reverse=True,
+    )
+
+    selected: list[Recipe] = [recipe for _, _, recipe in ranked[:limit]]
+    selected_signatures = {_family_signature(recipe) for recipe in selected}
+    for recipe in BREAKTHROUGH_BOOTSTRAP_RECIPES:
+        if len(selected) >= limit:
+            break
+        signature = _family_signature(recipe)
+        if signature in selected_signatures:
+            continue
+        selected.append(recipe)
+        selected_signatures.add(signature)
+    return selected
+
+
+def _select_breakthrough_recipes(
+    *,
+    blocked_keys: set[str],
+    wave_results: list[dict[str, Any]],
+    limit: int,
+) -> list[Recipe]:
+    if limit <= 0:
+        return []
+
+    seed_recipes = _select_breakthrough_seed_recipes(wave_results, limit=max(limit, 1))
+    if not seed_recipes:
+        seed_recipes = list(BREAKTHROUGH_BOOTSTRAP_RECIPES[:limit])
+
+    candidate_groups = [_breakthrough_family_candidates(seed)[:10] for seed in seed_recipes]
+    selected: list[Recipe] = []
+    selected_keys: set[str] = set()
+
+    while len(selected) < limit:
+        progress = False
+        for candidates in candidate_groups:
+            candidate = _choose_recipe_with_repeats(candidates, blocked_keys, selected_keys)
+            if candidate is None:
+                continue
+            selected.append(candidate)
+            selected_keys.add(candidate.key())
+            blocked_keys.add(candidate.key())
+            progress = True
+            if len(selected) >= limit:
+                break
+        if not progress:
+            break
+
+    return selected[:limit]
+
+
+def _wave_results(wave: dict[str, Any]) -> list[dict[str, Any]]:
+    return [run["result"] for run in wave["runs"] if run.get("result")]
+
+
+def _completed_cadence_waves(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [wave for wave in state["waves"] if wave.get("status") == "completed" and _wave_results(wave)]
+
+
+def _best_metric_for_waves(waves: list[dict[str, Any]], metric_name: str) -> float:
+    return max(
+        (
+            float(result.get(metric_name) or 0.0)
+            for wave in waves
+            for result in _wave_results(wave)
+        ),
+        default=0.0,
+    )
+
+
+def _base_cadence_slot_plan(exploration_slots: int) -> CadenceSlotPlan:
+    crossover_slots = 1 if exploration_slots > 0 else 0
+    breakthrough_slots = max(0, exploration_slots - crossover_slots)
+    return CadenceSlotPlan(
+        precision_slots=CADENCE_PRECISION_SLOTS,
+        sweep_slots=CADENCE_SWEEP_SLOTS,
+        crossover_slots=crossover_slots,
+        breakthrough_slots=breakthrough_slots,
+        plateau=False,
+    )
+
+
+def _cadence_slot_plan(state: dict[str, Any], exploration_slots: int) -> CadenceSlotPlan:
+    plan = _base_cadence_slot_plan(exploration_slots)
+    completed_waves = _completed_cadence_waves(state)
+    if len(completed_waves) < CADENCE_PLATEAU_LOOKBACK_WAVES + 1:
+        return plan
+
+    recent_waves = completed_waves[-CADENCE_PLATEAU_LOOKBACK_WAVES:]
+    earlier_waves = completed_waves[:-CADENCE_PLATEAU_LOOKBACK_WAVES]
+    if not earlier_waves:
+        return plan
+
+    precision_gain = _best_metric_for_waves(recent_waves, "best_precision_target") - _best_metric_for_waves(
+        earlier_waves,
+        "best_precision_target",
+    )
+    sweep_gain = _best_metric_for_waves(
+        recent_waves,
+        "best_threshold_sweep_target_best_dice",
+    ) - _best_metric_for_waves(
+        earlier_waves,
+        "best_threshold_sweep_target_best_dice",
+    )
+
+    if (
+        plan.breakthrough_slots > 0
+        and plan.sweep_slots > 1
+        and precision_gain < CADENCE_PLATEAU_MIN_PRECISION_GAIN
+        and sweep_gain < CADENCE_PLATEAU_MIN_SWEEP_GAIN
+    ):
+        return CadenceSlotPlan(
+            precision_slots=plan.precision_slots,
+            sweep_slots=plan.sweep_slots - 1,
+            crossover_slots=plan.crossover_slots,
+            breakthrough_slots=plan.breakthrough_slots + 1,
+            plateau=True,
+        )
+    return plan
+
+
 def _strategy_wave_recipes(
     *,
     prior_recipe_keys: set[str],
     precision_seed: Recipe,
     sweep_seed: Recipe,
     wave_results: list[dict[str, Any]] | None = None,
+    slots_per_family: int,
+    exploration_slots: int,
 ) -> list[Recipe]:
     selected_keys = set(prior_recipe_keys)
     selected: list[Recipe] = []
@@ -730,14 +1075,14 @@ def _strategy_wave_recipes(
         _choose_unused_recipes(
             _precision_family_candidates(precision_seed),
             selected_keys,
-            EXPLOITATION_SLOTS_PER_FAMILY,
+            slots_per_family,
         )
     )
     selected.extend(
         _choose_unused_recipes(
             _sweep_family_candidates(sweep_seed),
             selected_keys,
-            EXPLOITATION_SLOTS_PER_FAMILY,
+            slots_per_family,
         )
     )
     selected.extend(
@@ -745,21 +1090,106 @@ def _strategy_wave_recipes(
             blocked_keys=selected_keys,
             reference_recipes=[precision_seed, sweep_seed, *selected],
             wave_results=wave_results,
-            limit=EXPLORATION_SLOTS_PER_WAVE,
+            limit=exploration_slots,
         )
     )
 
-    if len(selected) < RECIPES_PER_WAVE:
-        raise RuntimeError(f"Could not assemble {RECIPES_PER_WAVE} unique recipes for the wave.")
-    return selected[:RECIPES_PER_WAVE]
+    recipes_per_wave = _recipe_count(slots_per_family, exploration_slots)
+    if len(selected) < recipes_per_wave:
+        raise RuntimeError(f"Could not assemble {recipes_per_wave} unique recipes for the wave.")
+    return selected[:recipes_per_wave]
 
 
-def _first_wave_recipes() -> list[Recipe]:
+def _cadence_wave_recipes(
+    *,
+    prior_recipe_keys: set[str],
+    precision_seed: Recipe,
+    sweep_seed: Recipe,
+    crossover_seed: Recipe,
+    slot_plan: CadenceSlotPlan,
+    wave_results: list[dict[str, Any]] | None = None,
+) -> list[Recipe]:
+    selected_keys = set(prior_recipe_keys)
+    selected: list[Recipe] = []
+    wave_results = wave_results or []
+
+    selected.extend(
+        _choose_family_recipes(
+            _precision_family_candidates(precision_seed),
+            selected_keys,
+            slot_plan.precision_slots,
+            allow_repeats=True,
+        )
+    )
+    selected.extend(
+        _choose_family_recipes(
+            _sweep_family_candidates(sweep_seed),
+            selected_keys,
+            slot_plan.sweep_slots,
+            allow_repeats=True,
+        )
+    )
+
+    if slot_plan.crossover_slots:
+        selected.extend(
+            _choose_family_recipes(
+                _crossover_family_candidates(crossover_seed),
+                selected_keys,
+                slot_plan.crossover_slots,
+                allow_repeats=True,
+            )
+        )
+
+    if slot_plan.breakthrough_slots:
+        selected.extend(
+            _select_breakthrough_recipes(
+                blocked_keys=selected_keys,
+                wave_results=wave_results,
+                limit=slot_plan.breakthrough_slots,
+            )
+        )
+
+    recipes_per_wave = (
+        slot_plan.precision_slots
+        + slot_plan.sweep_slots
+        + slot_plan.crossover_slots
+        + slot_plan.breakthrough_slots
+    )
+    if len(selected) < recipes_per_wave:
+        raise RuntimeError(f"Could not assemble {recipes_per_wave} cadence recipes for the wave.")
+    return selected[:recipes_per_wave]
+
+
+def _bootstrap_cadence_recipes(*, prior_recipe_keys: set[str]) -> list[Recipe]:
+    return _choose_unused_recipes(
+        list(CADENCE_BOOTSTRAP_RECIPES),
+        set(prior_recipe_keys),
+        len(CADENCE_BOOTSTRAP_RECIPES),
+    )
+
+
+def _initial_cadence_recipes(*, prior_recipe_keys: set[str], slots_per_family: int, exploration_slots: int) -> list[Recipe]:
+    expected_recipe_count = _recipe_count(slots_per_family, exploration_slots)
+    if not prior_recipe_keys and expected_recipe_count == len(CADENCE_BOOTSTRAP_RECIPES):
+        return _bootstrap_cadence_recipes(prior_recipe_keys=prior_recipe_keys)
+    return _cadence_wave_recipes(
+        prior_recipe_keys=prior_recipe_keys,
+        precision_seed=PRECISION_FAMILY_BASE,
+        sweep_seed=SWEEP_FAMILY_BASE,
+        crossover_seed=CROSSOVER_FAMILY_BASE,
+        slot_plan=_base_cadence_slot_plan(exploration_slots),
+        wave_results=[],
+    )
+
+
+def _first_wave_recipes(*, slots_per_family: int, exploration_slots: int) -> list[Recipe]:
     return _strategy_wave_recipes(
         prior_recipe_keys=set(),
         precision_seed=PRECISION_FAMILY_BASE,
         sweep_seed=SWEEP_FAMILY_BASE,
         wave_results=[],
+        slots_per_family=slots_per_family,
+        exploration_slots=exploration_slots,
     )
 
 
@@ -782,8 +1212,13 @@ def _select_seed(results: list[dict[str, Any]], mode: str, used_recipe_keys: set
     return ranked[0]
 
 
-def _next_wave_recipes(completed_wave: dict[str, Any], prior_recipe_keys: set[str]) -> list[Recipe]:
-    results = [run["result"] for run in completed_wave["runs"] if run.get("result")]
+def _recipes_from_results(
+    results: list[dict[str, Any]],
+    *,
+    prior_recipe_keys: set[str],
+    slots_per_family: int,
+    exploration_slots: int,
+) -> list[Recipe]:
     if not results:
         raise RuntimeError("No completed results found for wave; cannot build next wave.")
     precision_seed = _select_family_seed_recipe(
@@ -803,6 +1238,60 @@ def _next_wave_recipes(completed_wave: dict[str, Any], prior_recipe_keys: set[st
         precision_seed=precision_seed,
         sweep_seed=sweep_seed,
         wave_results=results,
+        slots_per_family=slots_per_family,
+        exploration_slots=exploration_slots,
+    )
+
+
+def _cadence_recipes_from_results(
+    results: list[dict[str, Any]],
+    *,
+    prior_recipe_keys: set[str],
+    slot_plan: CadenceSlotPlan,
+) -> list[Recipe]:
+    if not results:
+        raise RuntimeError("No completed results found for cadence selection.")
+    precision_seed = _select_family_seed_recipe(
+        results,
+        family_matcher=_matches_precision_family,
+        mode="precision",
+        fallback=PRECISION_FAMILY_BASE,
+    )
+    sweep_seed = _select_family_seed_recipe(
+        results,
+        family_matcher=_matches_sweep_family,
+        mode="sweep",
+        fallback=SWEEP_FAMILY_BASE,
+    )
+    crossover_seed = _select_family_seed_recipe(
+        results,
+        family_matcher=_matches_crossover_family,
+        mode="sweep",
+        fallback=CROSSOVER_FAMILY_BASE,
+    )
+    return _cadence_wave_recipes(
+        prior_recipe_keys=prior_recipe_keys,
+        precision_seed=precision_seed,
+        sweep_seed=sweep_seed,
+        crossover_seed=crossover_seed,
+        slot_plan=slot_plan,
+        wave_results=results,
+    )
+
+
+def _next_wave_recipes(
+    completed_wave: dict[str, Any],
+    prior_recipe_keys: set[str],
+    *,
+    slots_per_family: int,
+    exploration_slots: int,
+) -> list[Recipe]:
+    results = [run["result"] for run in completed_wave["runs"] if run.get("result")]
+    return _recipes_from_results(
+        results,
+        prior_recipe_keys=prior_recipe_keys,
+        slots_per_family=slots_per_family,
+        exploration_slots=exploration_slots,
     )
 
 
@@ -1018,14 +1507,46 @@ def _rank_results(runs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _init_state(campaign_slug: str, campaign_dir: Path, wave_count: int, poll_seconds: int) -> dict[str, Any]:
+def _completed_results_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for wave in state["waves"]:
+        for run in wave["runs"]:
+            result = run.get("result")
+            if result:
+                results.append(result)
+    return results
+
+
+def _init_state(
+    campaign_slug: str,
+    campaign_dir: Path,
+    wave_count: int,
+    poll_seconds: int,
+    *,
+    mode: str,
+    slots_per_family: int,
+    exploration_slots: int,
+    submit_interval_seconds: int,
+    duration_hours: float,
+) -> dict[str, Any]:
+    if mode == "cadence":
+        recipes = _initial_cadence_recipes(
+            prior_recipe_keys=set(),
+            slots_per_family=slots_per_family,
+            exploration_slots=exploration_slots,
+        )
+    else:
+        recipes = _first_wave_recipes(
+            slots_per_family=slots_per_family,
+            exploration_slots=exploration_slots,
+        )
     first_wave = {
         "wave_index": 1,
         "status": "pending_submission",
         "submitted_at": None,
         "completed_at": None,
         "runs": _build_wave_runs(
-            recipes=_first_wave_recipes(),
+            recipes=recipes,
             campaign_slug=campaign_slug,
             campaign_dir=campaign_dir,
             wave_index=1,
@@ -1039,6 +1560,11 @@ def _init_state(campaign_slug: str, campaign_dir: Path, wave_count: int, poll_se
         "updated_at": utc_now_iso(),
         "wave_count": wave_count,
         "poll_seconds": poll_seconds,
+        "mode": mode,
+        "slots_per_family": slots_per_family,
+        "exploration_slots": exploration_slots,
+        "submit_interval_seconds": submit_interval_seconds,
+        "duration_hours": duration_hours,
         "waves": [first_wave],
         "reports": {
             "latest_jobs_html": str((PROJECT_ROOT / "checkpoints" / "reports" / "latest_jobs.html").resolve()),
@@ -1057,7 +1583,12 @@ def _ensure_next_wave(state: dict[str, Any], campaign_dir: Path) -> None:
 
     next_wave_index = len(state["waves"]) + 1
     try:
-        recipes = _next_wave_recipes(last_wave, _recipe_keys_from_state(state))
+        recipes = _next_wave_recipes(
+            last_wave,
+            _recipe_keys_from_state(state),
+            slots_per_family=int(state.get("slots_per_family", DEFAULT_EXPLOITATION_SLOTS_PER_FAMILY)),
+            exploration_slots=int(state.get("exploration_slots", DEFAULT_EXPLORATION_SLOTS_PER_WAVE)),
+        )
     except RuntimeError as exc:
         state["wave_count"] = len(state["waves"])
         state["stop_reason"] = str(exc)
@@ -1077,6 +1608,94 @@ def _ensure_next_wave(state: dict[str, Any], campaign_dir: Path) -> None:
     }
     state["waves"].append(next_wave)
     _log(f"Prepared wave {next_wave_index} with recipes {[run['recipe']['slug'] for run in next_wave['runs']]}")
+
+
+def _cadence_deadline(state: dict[str, Any]) -> datetime | None:
+    created_at = _parse_iso8601(state.get("created_at"))
+    duration_hours = state.get("duration_hours")
+    if created_at is None or duration_hours in (None, ""):
+        return None
+    return created_at + timedelta(hours=float(duration_hours))
+
+
+def _cadence_has_submission_capacity(state: dict[str, Any]) -> bool:
+    return len(state["waves"]) < int(state.get("wave_count", 0) or 0)
+
+
+def _cadence_submission_due(state: dict[str, Any]) -> bool:
+    if not _cadence_has_submission_capacity(state):
+        return False
+
+    deadline = _cadence_deadline(state)
+    if deadline is not None and _now_utc() >= deadline:
+        return False
+
+    submitted_times = [
+        _parse_iso8601(wave.get("submitted_at"))
+        for wave in state["waves"]
+        if wave.get("submitted_at") is not None
+    ]
+    submitted_times = [timestamp for timestamp in submitted_times if timestamp is not None]
+    if not submitted_times:
+        return True
+
+    last_submitted_at = max(submitted_times)
+    interval_seconds = int(state.get("submit_interval_seconds", 7200) or 7200)
+    return _now_utc() >= last_submitted_at + timedelta(seconds=interval_seconds)
+
+
+def _ensure_next_cadence_wave(state: dict[str, Any], campaign_dir: Path) -> None:
+    if not _cadence_submission_due(state):
+        return
+    if any(wave["status"] == "pending_submission" for wave in state["waves"]):
+        return
+
+    next_wave_index = len(state["waves"]) + 1
+    prior_recipe_keys = _recipe_keys_from_state(state)
+    completed_results = _completed_results_from_state(state)
+    slots_per_family = int(state.get("slots_per_family", CADENCE_PRECISION_SLOTS) or CADENCE_PRECISION_SLOTS)
+    exploration_slots = int(state.get("exploration_slots", 2) or 2)
+    slot_plan = _cadence_slot_plan(state, exploration_slots)
+
+    try:
+        if completed_results:
+            recipes = _cadence_recipes_from_results(
+                completed_results,
+                prior_recipe_keys=prior_recipe_keys,
+                slot_plan=slot_plan,
+            )
+        else:
+            recipes = _initial_cadence_recipes(
+                prior_recipe_keys=prior_recipe_keys,
+                slots_per_family=slots_per_family,
+                exploration_slots=exploration_slots,
+            )
+    except RuntimeError as exc:
+        state["wave_count"] = len(state["waves"])
+        state["stop_reason"] = str(exc)
+        _log(f"No additional cadence wave prepared: {exc}")
+        return
+
+    next_wave = {
+        "wave_index": next_wave_index,
+        "status": "pending_submission",
+        "submitted_at": None,
+        "completed_at": None,
+        "runs": _build_wave_runs(
+            recipes=recipes,
+            campaign_slug=state["campaign"],
+            campaign_dir=campaign_dir,
+            wave_index=next_wave_index,
+        ),
+    }
+    state["waves"].append(next_wave)
+    if slot_plan.plateau:
+        _log(
+            "Cadence plateau detected; using slot plan "
+            f"{slot_plan.precision_slots}+{slot_plan.sweep_slots}+"
+            f"{slot_plan.crossover_slots}+{slot_plan.breakthrough_slots}"
+        )
+    _log(f"Prepared cadence wave {next_wave_index} with recipes {[run['recipe']['slug'] for run in next_wave['runs']]}")
 
 
 def _submit_pending_runs(wave: dict[str, Any]) -> None:
@@ -1100,6 +1719,12 @@ def _update_wave(wave: dict[str, Any], max_retries: int, configure_timeout_secon
         _log(f"Wave {wave['wave_index']} completed with summary {wave['summary']}")
 
 
+def _update_all_waves(state: dict[str, Any], max_retries: int, configure_timeout_seconds: int) -> None:
+    for wave in state["waves"]:
+        if wave["status"] != "completed":
+            _update_wave(wave, max_retries=max_retries, configure_timeout_seconds=configure_timeout_seconds)
+
+
 def _refresh_reports(state: dict[str, Any], latest_n: int) -> None:
     reports = state.setdefault("reports", {})
     latest_path = generate_latest_jobs_report(
@@ -1119,7 +1744,17 @@ def _refresh_reports(state: dict[str, Any], latest_n: int) -> None:
     _log(f"Updated best jobs report at {best_path}")
 
 
-def _apply_resume_settings(state: dict[str, Any], *, wave_count: int, poll_seconds: int) -> None:
+def _apply_resume_settings(
+    state: dict[str, Any],
+    *,
+    wave_count: int,
+    poll_seconds: int,
+    mode: str,
+    slots_per_family: int,
+    exploration_slots: int,
+    submit_interval_seconds: int,
+    duration_hours: float,
+) -> None:
     current_wave_count = int(state.get("wave_count", 0) or 0)
     if wave_count > current_wave_count:
         state["wave_count"] = wave_count
@@ -1134,6 +1769,12 @@ def _apply_resume_settings(state: dict[str, Any], *, wave_count: int, poll_secon
     else:
         state.setdefault("poll_seconds", poll_seconds)
 
+    state["mode"] = mode
+    state["slots_per_family"] = slots_per_family
+    state["exploration_slots"] = exploration_slots
+    state["submit_interval_seconds"] = submit_interval_seconds
+    state["duration_hours"] = duration_hours
+
     reports = state.setdefault("reports", {})
     reports.setdefault("latest_jobs_html", str((PROJECT_ROOT / "checkpoints" / "reports" / "latest_jobs.html").resolve()))
     reports.setdefault("best_jobs_html", str((PROJECT_ROOT / "checkpoints" / "reports" / "best_jobs.html").resolve()))
@@ -1147,6 +1788,11 @@ def run_autopilot(
     latest_n: int,
     max_retries: int,
     configure_timeout_seconds: int,
+    mode: str,
+    slots_per_family: int,
+    exploration_slots: int,
+    submit_interval_seconds: int,
+    duration_hours: float,
     dry_run: bool,
 ) -> Path:
     if not dry_run and shutil.which("sbatch") is None:
@@ -1164,10 +1810,29 @@ def run_autopilot(
     if state_path.exists():
         state = json.loads(state_path.read_text())
         _log(f"Resuming autopilot campaign {campaign_slug}")
-        _apply_resume_settings(state, wave_count=wave_count, poll_seconds=poll_seconds)
+        _apply_resume_settings(
+            state,
+            wave_count=wave_count,
+            poll_seconds=poll_seconds,
+            mode=mode,
+            slots_per_family=slots_per_family,
+            exploration_slots=exploration_slots,
+            submit_interval_seconds=submit_interval_seconds,
+            duration_hours=duration_hours,
+        )
         _save_state(state_path, state)
     else:
-        state = _init_state(campaign_slug, campaign_dir, wave_count, poll_seconds)
+        state = _init_state(
+            campaign_slug,
+            campaign_dir,
+            wave_count,
+            poll_seconds,
+            mode=mode,
+            slots_per_family=slots_per_family,
+            exploration_slots=exploration_slots,
+            submit_interval_seconds=submit_interval_seconds,
+            duration_hours=duration_hours,
+        )
         _save_state(state_path, state)
         _log(f"Initialized autopilot campaign {campaign_slug}")
 
@@ -1175,28 +1840,52 @@ def run_autopilot(
         _log("Dry run mode: generated initial wave only, no jobs submitted.")
         return state_path
 
-    while True:
-        _ensure_next_wave(state, campaign_dir)
-        current_wave = next((wave for wave in state["waves"] if wave["status"] != "completed"), None)
+    if mode == "cadence":
+        while True:
+            _update_all_waves(state, max_retries=max_retries, configure_timeout_seconds=configure_timeout_seconds)
+            _ensure_next_cadence_wave(state, campaign_dir)
+            pending_waves = [wave for wave in state["waves"] if wave["status"] == "pending_submission"]
+            for wave in pending_waves:
+                _submit_pending_runs(wave)
 
-        if current_wave is None:
-            break
-
-        if current_wave["status"] == "pending_submission":
-            _submit_pending_runs(current_wave)
+            _refresh_reports(state, latest_n=latest_n)
             _save_state(state_path, state)
-            continue
 
-        _update_wave(current_wave, max_retries=max_retries, configure_timeout_seconds=configure_timeout_seconds)
-        _refresh_reports(state, latest_n=latest_n)
-        _save_state(state_path, state)
+            active_waves = [wave for wave in state["waves"] if wave["status"] != "completed"]
+            deadline = _cadence_deadline(state)
+            deadline_reached = deadline is not None and _now_utc() >= deadline
+            if deadline_reached:
+                state["stop_reason"] = state.get("stop_reason") or "Reached cadence submission deadline."
+                break
+            if not active_waves and not _cadence_has_submission_capacity(state):
+                break
 
-        if current_wave["status"] == "completed":
-            continue
+            sleep_seconds = int(state.get("poll_seconds", poll_seconds) or poll_seconds)
+            _log(f"Sleeping for {sleep_seconds} seconds before the next poll")
+            time.sleep(sleep_seconds)
+    else:
+        while True:
+            _ensure_next_wave(state, campaign_dir)
+            current_wave = next((wave for wave in state["waves"] if wave["status"] != "completed"), None)
 
-        sleep_seconds = int(state.get("poll_seconds", poll_seconds) or poll_seconds)
-        _log(f"Sleeping for {sleep_seconds} seconds before the next poll")
-        time.sleep(sleep_seconds)
+            if current_wave is None:
+                break
+
+            if current_wave["status"] == "pending_submission":
+                _submit_pending_runs(current_wave)
+                _save_state(state_path, state)
+                continue
+
+            _update_wave(current_wave, max_retries=max_retries, configure_timeout_seconds=configure_timeout_seconds)
+            _refresh_reports(state, latest_n=latest_n)
+            _save_state(state_path, state)
+
+            if current_wave["status"] == "completed":
+                continue
+
+            sleep_seconds = int(state.get("poll_seconds", poll_seconds) or poll_seconds)
+            _log(f"Sleeping for {sleep_seconds} seconds before the next poll")
+            time.sleep(sleep_seconds)
 
     state["status"] = "completed"
     state["completed_at"] = utc_now_iso()
@@ -1209,10 +1898,40 @@ def run_autopilot(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Submit and monitor iterative segmentation training waves.")
     parser.add_argument("--campaign", default="segmentation-apr04-autopilot", help="Campaign name used for state/log paths.")
-    parser.add_argument("--waves", type=int, default=3, help="Number of 6-job waves to run.")
+    parser.add_argument(
+        "--mode",
+        choices=("sequential", "cadence"),
+        default="sequential",
+        help="Sequential waits for a whole wave to finish before the next one; cadence submits on a fixed timer.",
+    )
+    parser.add_argument("--waves", type=int, default=3, help="Number of waves to run in sequential mode.")
     parser.add_argument("--poll-seconds", type=int, default=1800, help="Sleep interval between monitoring polls.")
     parser.add_argument("--latest-n", type=int, default=25, help="How many runs to include in the refreshed HTML report.")
     parser.add_argument("--max-retries", type=int, default=3, help="Maximum attempts per recipe, including resubmits.")
+    parser.add_argument(
+        "--slots-per-family",
+        type=int,
+        default=DEFAULT_EXPLOITATION_SLOTS_PER_FAMILY,
+        help="How many exploitation recipes to keep for each family in sequential mode.",
+    )
+    parser.add_argument(
+        "--exploration-slots",
+        type=int,
+        default=DEFAULT_EXPLORATION_SLOTS_PER_WAVE,
+        help="How many non-core slots to add per wave. In cadence mode the recommended value 2 means 1 crossover + 1 exploration.",
+    )
+    parser.add_argument(
+        "--submit-interval-seconds",
+        type=int,
+        default=7200,
+        help="Cadence mode only: seconds between new submissions.",
+    )
+    parser.add_argument(
+        "--duration-hours",
+        type=float,
+        default=24.0,
+        help="Cadence mode only: total controller runtime budget for scheduling new waves.",
+    )
     parser.add_argument(
         "--configure-timeout-seconds",
         type=int,
@@ -1232,14 +1951,37 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--poll-seconds must be greater than 0")
     if args.max_retries <= 0:
         parser.error("--max-retries must be greater than 0")
+    if args.slots_per_family <= 0:
+        parser.error("--slots-per-family must be greater than 0")
+    if args.exploration_slots < 0:
+        parser.error("--exploration-slots must be 0 or greater")
+    if args.submit_interval_seconds <= 0:
+        parser.error("--submit-interval-seconds must be greater than 0")
+    if args.duration_hours <= 0:
+        parser.error("--duration-hours must be greater than 0")
+
+    slots_per_family = args.slots_per_family
+    exploration_slots = args.exploration_slots
+    if args.mode == "cadence" and slots_per_family == DEFAULT_EXPLOITATION_SLOTS_PER_FAMILY and exploration_slots == DEFAULT_EXPLORATION_SLOTS_PER_WAVE:
+        slots_per_family = CADENCE_PRECISION_SLOTS
+        exploration_slots = CADENCE_CROSSOVER_SLOTS + 1
+
+    wave_count = args.waves
+    if args.mode == "cadence":
+        wave_count = _planned_cadence_wave_count(args.duration_hours, args.submit_interval_seconds)
 
     state_path = run_autopilot(
         campaign=args.campaign,
-        wave_count=args.waves,
+        wave_count=wave_count,
         poll_seconds=args.poll_seconds,
         latest_n=args.latest_n,
         max_retries=args.max_retries,
         configure_timeout_seconds=args.configure_timeout_seconds,
+        mode=args.mode,
+        slots_per_family=slots_per_family,
+        exploration_slots=exploration_slots,
+        submit_interval_seconds=args.submit_interval_seconds,
+        duration_hours=args.duration_hours,
         dry_run=args.dry_run,
     )
     print(f"State written to {state_path}")

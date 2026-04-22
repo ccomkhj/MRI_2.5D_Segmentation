@@ -8,6 +8,7 @@ data/overlay/
 data/processed_seg/
 data/aligned_v2/
 data/visualizations/
+data/
 validation_results/
 logs/
 predictions/
@@ -35,3 +36,15 @@ docs/archive/
 archive/
 .worktrees/
 .cache/
+
+slurm-*
+mri/config
+scripts/
+!scripts/
+scripts/*
+!scripts/new/
+!scripts/report_latest_jobs.py
+!scripts/new/pipeline-inference
+.env
+.gitignore
+AGENT.md
