@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 import warnings
 
@@ -11,6 +12,11 @@ try:
     from monai.networks.nets import DynUNet, SegResNet, UNet, VNet
 except Exception:  # pragma: no cover - optional dependency
     DynUNet = SegResNet = UNet = VNet = None
+
+try:
+    from monai.networks.nets import SwinUNETR
+except Exception:  # pragma: no cover - optional dependency
+    SwinUNETR = None
 
 try:
     from .simple_unet import SimpleUNet
@@ -61,6 +67,19 @@ def _wrap_with_logit_calibration(model, *, model_name: str, kwargs: dict[str, An
     )
 
 
+def _prepare_swinunetr_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    build_kwargs = dict(kwargs)
+    signature = inspect.signature(SwinUNETR.__init__)
+    supports_img_size = "img_size" in signature.parameters
+
+    if supports_img_size:
+        build_kwargs.setdefault("img_size", (256, 256))
+    else:
+        build_kwargs.pop("img_size", None)
+
+    return build_kwargs
+
+
 @register_segmentation_model("simple_unet")
 def build_simple_unet(**kwargs: Any):
     if SimpleUNet is None:
@@ -109,3 +128,16 @@ def build_vnet(**kwargs: Any):
     calibration_cfg = _extract_calibration_kwargs(build_kwargs)
     model = VNet(**filter_model_kwargs(VNet, build_kwargs, "vnet"))
     return _wrap_with_logit_calibration(model, model_name="vnet", kwargs=build_kwargs, calibration_cfg=calibration_cfg)
+
+
+@register_segmentation_model("swinunetr")
+def build_swinunetr(**kwargs: Any):
+    if SwinUNETR is None:
+        raise ImportError(
+            "MONAI SwinUNETR is not available in this environment/version. "
+            "Use dynunet, segresnet, unet, or vnet instead."
+        )
+    build_kwargs = _prepare_swinunetr_kwargs(kwargs)
+    calibration_cfg = _extract_calibration_kwargs(build_kwargs)
+    model = SwinUNETR(**filter_model_kwargs(SwinUNETR, build_kwargs, "swinunetr"))
+    return _wrap_with_logit_calibration(model, model_name="swinunetr", kwargs=build_kwargs, calibration_cfg=calibration_cfg)

@@ -46,6 +46,7 @@ The pipeline is organized around reusable modules in `mri/`:
 - `mri/training/`: trainer loop, checkpointing, device resolution
 - `mri/inference/`: segmentation/classification inference runners
 - `mri/cli/`: train/infer/sweep/research entrypoints
+- `mri/cli/nnunet.py`: sample-level export + MONAI `nnUNetV2Runner` bridge for separate nnU-Net experiments
 
 ## Pipeline Flow
 

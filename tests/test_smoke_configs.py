@@ -40,6 +40,20 @@ def test_classification_config_loads():
     assert cfg["data"]["seg_pred_dir"] == "data/seg_preds"
 
 
+def test_segmentation_swinunetr_preset_loads():
+    preset = yaml.safe_load(Path("mri/config/model/segmentation/swinunetr.yaml").read_text())
+
+    assert preset["model"]["name"] == "swinunetr"
+    assert preset["model"]["params"]["spatial_dims"] == 2
+    assert preset["model"]["params"]["in_channels"] == 7
+    assert preset["model"]["params"]["out_channels"] == 2
+    assert preset["model"]["params"]["img_size"] == [256, 256]
+    assert preset["model"]["params"]["feature_size"] == 24
+    assert preset["model"]["params"]["depths"] == [2, 2, 2, 2]
+    assert preset["model"]["params"]["num_heads"] == [3, 6, 12, 24]
+    assert preset["model"]["params"]["use_checkpoint"] is True
+
+
 def test_segmentation_legacy_target_recipe_767519_loads():
     cfg = load_config("mri/config/task/segmentation_legacy_target_recipe_767519.yaml")
 
@@ -442,6 +456,75 @@ def test_segmentation_sweepdice_experiment_variants_load():
         if "model.params.learn_logit_bias" in expected:
             assert cfg["model"]["params"]["learn_logit_bias"] is expected["model.params.learn_logit_bias"]
             assert cfg["model"]["params"]["logit_bias_init"] == expected["model.params.logit_bias_init"]
+
+
+def test_segmentation_swinunetr_variants_load():
+    configs = {
+        "mri/config/task/segmentation_swinunetr_smoke.yaml": {
+            "data.split_file": "data/splits/smoke_3case.yaml",
+            "data.stack_depth": 7,
+            "data.num_workers": 0,
+            "train.batch_size": 1,
+            "train.epochs": 1,
+            "tracking.wandb.enabled": False,
+        },
+        "mri/config/task/segmentation_apr21_positive_swinunetr_stack7_sweep_dice_100.yaml": {
+            "data.stack_depth": 7,
+            "train.batch_size": 2,
+            "train.lr": 2.0e-05,
+            "scheduler.name": "onecycle",
+            "scheduler.params.max_lr": 1.0e-04,
+            "metrics.primary_metric_name": "threshold_sweep_target_best_dice",
+            "metrics.threshold_sweep.every": 1,
+        },
+        "mri/config/task/segmentation_apr21_positive_swinunetr_stack7_sweep_dice_logit_bias_100.yaml": {
+            "data.stack_depth": 7,
+            "model.params.learn_logit_bias": True,
+            "model.params.logit_bias_init": [0.0, 0.0],
+        },
+    }
+
+    for path, expected in configs.items():
+        cfg = load_config(path)
+
+        assert cfg["task"]["name"] == "segmentation"
+        assert cfg["data"]["require_positive"] is True
+        assert cfg["model"]["name"] == "swinunetr"
+        assert cfg["model"]["params"]["spatial_dims"] == 2
+        assert cfg["model"]["params"]["in_channels"] == 9
+        assert cfg["model"]["params"]["out_channels"] == 2
+        assert cfg["model"]["params"]["feature_size"] == 24
+        assert cfg["model"]["params"]["depths"] == [2, 2, 2, 2]
+        assert cfg["model"]["params"]["num_heads"] == [3, 6, 12, 24]
+        assert cfg["model"]["params"]["use_checkpoint"] is True
+
+        if "data.split_file" in expected:
+            assert cfg["data"]["split_file"] == expected["data.split_file"]
+        if "data.stack_depth" in expected:
+            assert cfg["data"]["stack_depth"] == expected["data.stack_depth"]
+        if "data.num_workers" in expected:
+            assert cfg["data"]["num_workers"] == expected["data.num_workers"]
+        if "train.batch_size" in expected:
+            assert cfg["train"]["batch_size"] == expected["train.batch_size"]
+        if "train.epochs" in expected:
+            assert cfg["train"]["epochs"] == expected["train.epochs"]
+        if "train.lr" in expected:
+            assert cfg["train"]["lr"] == expected["train.lr"]
+        if "scheduler.name" in expected:
+            assert cfg["scheduler"]["name"] == expected["scheduler.name"]
+        if "scheduler.params.max_lr" in expected:
+            assert cfg["scheduler"]["params"]["max_lr"] == expected["scheduler.params.max_lr"]
+        if "metrics.primary_metric_name" in expected:
+            assert cfg["metrics"]["primary_metric_name"] == expected["metrics.primary_metric_name"]
+        if "metrics.threshold_sweep.every" in expected:
+            assert cfg["metrics"]["threshold_sweep"]["enabled"] is True
+            assert cfg["metrics"]["threshold_sweep"]["every"] == expected["metrics.threshold_sweep.every"]
+            assert cfg["metrics"]["threshold_sweep"]["class_names"] == ["target"]
+        if "model.params.learn_logit_bias" in expected:
+            assert cfg["model"]["params"]["learn_logit_bias"] is expected["model.params.learn_logit_bias"]
+            assert cfg["model"]["params"]["logit_bias_init"] == expected["model.params.logit_bias_init"]
+        if "tracking.wandb.enabled" in expected:
+            assert cfg["tracking"]["wandb"]["enabled"] is expected["tracking.wandb.enabled"]
 
 
 def test_smoke_split_has_one_case_per_split():
