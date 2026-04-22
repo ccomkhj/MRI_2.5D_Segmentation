@@ -1,54 +1,85 @@
-# MRI Modular Pipeline (New Architecture)
+# MRI Pipeline
 
-This repository uses a config-driven modular architecture for prostate MRI segmentation and classification.
+## Goal
+
+A research pipeline for prostate MRI analysis, split into two stages:
+
+1. **Segmentation** — a 2.5D model (MONAI DynUNet / SegResNet / SwinUNETR family) predicts the prostate gland and suspected lesion regions from stacked T2 + ADC + CALC slices.
+2. **Classification** — a downstream model consumes the segmentation predictions alongside the MRI inputs to produce a per-case risk score.
+
+For quick clinical inspection of a single study, a single-call wrapper (`mri/service/pipeline.py`) and a web UI (`mri/service/ui.py`) turn a raw vendor DICOM zip into an annotated, self-contained HTML report.
+
+## Quick start (fresh clone)
+
+Prerequisite: [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+# 1. Install dicom_mapper (DICOM preprocessing helper) first
+git clone git@github.com:ccomkhj/dicom_mapper.git
+
+# 2. Clone cancer_detector alongside it, create one shared venv
+git clone git@github.com:ccomkhj/cancer_detector.git
+cd cancer_detector
+uv venv --python 3.11
+source .venv/bin/activate
+
+# 3. Install dicom_mapper into the venv, then cancer_detector deps
+uv pip install -e ../dicom_mapper
+uv pip install -r requirements.txt
+
+# 4. Launch the clinician web UI (downloads the default model on first run)
+python -m mri.service.ui
+```
+
+The UI opens at `http://127.0.0.1:7860/`. Drag in a vendor DICOM `.zip`, click **Analyze** to review metadata, then **Run segmentation** to generate the HTML report.
+
+On the very first launch, a default segmentation checkpoint (~150 MB) is downloaded from the [cancer_detector releases](https://github.com/ccomkhj/cancer_detector/releases) into `checkpoints/default/`. Subsequent launches reuse it. To point at your own checkpoint instead, set `MRI_DEFAULT_CHECKPOINT=/path/to/run_dir` or paste it into the **Advanced** field in the UI.
+
+For the full research workflow (training, sweeps, HPC) see the researcher section below.
+
+## How to use
+
+### Clinician (web UI)
+
+```bash
+pip install -r requirements.txt
+python -m mri.service.ui
+```
+
+A browser tab opens at `http://127.0.0.1:7860/`. Upload a vendor DICOM `.zip`, click **Analyze** to review the detected patient metadata and T2 / ADC / CALC series, then click **Run segmentation**. The annotated HTML report opens in a new tab with a banner summarizing any suspected lesion slices.
+
+Override the default checkpoint via the **Advanced** field or the `MRI_DEFAULT_CHECKPOINT` environment variable.
+
+### Researcher / developer
+
+Detailed workflow guides live in [`docs/`](docs/):
+
+- [docs/README.md](docs/README.md) — documentation index
+- [docs/setup.md](docs/setup.md) — environment setup and sanity checks
+- [docs/data.md](docs/data.md) — import or sync `aligned_v2`
+- [docs/splits.md](docs/splits.md) — generate the shared dated split
+- [docs/configuration.md](docs/configuration.md) — layered YAML config composition
+- [docs/train.md](docs/train.md) — segmentation-first training workflow
+- [docs/inference.md](docs/inference.md) — segmentation and classification inference
+- [docs/dicom_wrapper.md](docs/dicom_wrapper.md) — single-call DICOM zip wrapper
+- [docs/research.md](docs/research.md) — end-to-end local research runner
+- [docs/sweeps.md](docs/sweeps.md) — sweep and downstream promotion flow
+- [docs/smoke.md](docs/smoke.md) — short CPU smoke workflows
+- [docs/slurm.md](docs/slurm.md) — HPC execution via `scripts/new/*`
+- [docs/paper_run_checklist.md](docs/paper_run_checklist.md) — checklist for paper runs
 
 **Official execution paths:**
-- `mri/cli/train.py`
-- `mri/cli/infer.py`
-- `mri/cli/pipeline_infer.py`
-- `mri/cli/sweep.py`
-- `mri/cli/research.py`
-- `mri/service/pipeline.py` (DICOM zip → segmentation → HTML report wrapper — part of the `mri/` package)
-- `scripts/new/train`
-- `scripts/new/inference`
+
+- `mri/cli/{train,infer,pipeline_infer,sweep,research}.py`
+- `mri/service/pipeline.py` — DICOM zip → segmentation → HTML report wrapper
+- `mri/service/ui.py` — Gradio web UI around the wrapper
+- `scripts/new/{train,inference}` — HPC launchers (native; support direct run and `sbatch`)
 
 > **Naming note.** Two unrelated `service/` directories exist:
-> - `mri/service/` — modern, part of the `mri/` package; contains `pipeline.py` (the DICOM wrapper above). Use this.
-> - `service/` (top-level) — legacy compatibility wrappers (`service/train.py`, `service/inference.py`) for older scripts. Do not use for new work; prefer `mri/cli/*` and `scripts/new/*`.
+> - `mri/service/` — modern, part of the `mri/` package. Use this.
+> - `service/` (top-level) — legacy compatibility wrappers. Do not use for new work.
 
-## Documentation
-
-The root README is the overview. Detailed workflow guides live under `docs/`.
-
-Recommended starting points:
-
-- [docs/README.md](docs/README.md): documentation index
-- [docs/setup.md](docs/setup.md): environment setup and sanity checks
-- [docs/data.md](docs/data.md): import or sync `aligned_v2`
-- [docs/splits.md](docs/splits.md): generate the shared dated split
-- [docs/configuration.md](docs/configuration.md): layered YAML config composition
-- [docs/train.md](docs/train.md): segmentation-first training workflow
-- [docs/inference.md](docs/inference.md): segmentation and classification inference
-- [docs/dicom_wrapper.md](docs/dicom_wrapper.md): single-call DICOM zip → segmentation → HTML report
-- [docs/research.md](docs/research.md): end-to-end local research runner
-- [docs/smoke.md](docs/smoke.md): short CPU smoke workflows
-- [docs/sweeps.md](docs/sweeps.md): sweep and downstream promotion flow
-- [docs/paper_run_checklist.md](docs/paper_run_checklist.md): checklist for real paper runs
-
-## Architecture Overview
-
-The pipeline is organized around reusable modules in `mri/`:
-
-- `mri/config/`: YAML config loading (`defaults + task config`)
-- `mri/data/`: metadata loading, split/index builders, datasets
-- `mri/models/`: segmentation/classification model registry + builders
-- `mri/tasks/`: task-specific loss/metric handling
-- `mri/training/`: trainer loop, checkpointing, device resolution
-- `mri/inference/`: segmentation/classification inference runners
-- `mri/cli/`: train/infer/sweep/research entrypoints
-- `mri/cli/nnunet.py`: sample-level export + MONAI `nnUNetV2Runner` bridge for separate nnU-Net experiments
-
-## Pipeline Flow
+## Pipeline flow
 
 ```mermaid
 flowchart TD
@@ -74,212 +105,4 @@ flowchart TD
     J -. promotes best upstream run .-> G
 ```
 
-The important constraint is structural: segmentation runs first, and classification consumes the selected MRI inputs together with segmentation prediction outputs.
-
-## Repository Structure
-
-```text
-mri/
-  cli/
-    train.py
-    infer.py
-    pipeline_infer.py
-    sweep.py
-    research.py
-  config/
-    defaults.yaml
-    loader.py
-    task/
-      segmentation.yaml
-      classification.yaml
-      segmentation_smoke.yaml
-      classification_smoke.yaml
-    preset/
-    model/
-    augment/
-    sweep/
-  data/
-  models/
-  tasks/
-  training/
-  inference/
-  transforms/
-  experiments/
-  service/
-    pipeline.py
-
-scripts/
-  new/
-    train
-    inference
-    research-smoke
-
-service/                 # legacy compatibility wrappers (do not use for new work)
-  train.py
-  inference.py
-
-tools/
-  generate_splits.py
-  dataset/
-  preprocessing/
-  validation/
-```
-
-## Environment Setup
-
-```bash
-conda create -n mri python=3.12 -y
-conda activate mri
-pip install -r requirements.txt
-```
-
-## Data Split Preparation
-
-Import or sync aligned data produced by the sibling `tcia-handler` repository:
-
-```bash
-python tools/dataset/import_tcia_aligned.py --source /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest data/aligned_v2 --mode link
-```
-
-Use `--mode copy` if you need a physical copy instead of a symlink.
-
-Generate split YAMLs from metadata:
-
-```bash
-python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --output data/splits/<YYYY-MM-DD>.yaml --label-space downstream_5class
-```
-
-That command also writes a JSON summary next to the split file with per-split label histograms.
-
-Use one dated split artifact for both segmentation and classification paper runs.
-
-## Training
-
-### Local
-
-```bash
-python mri/cli/train.py --config mri/config/task/segmentation.yaml
-python mri/cli/train.py --config mri/config/task/classification.yaml
-```
-
-`classification` requires segmentation predictions to already exist under `data.seg_pred_dir`.
-
-### HPC (Native, No Container)
-
-```bash
-bash scripts/new/train --config mri/config/task/segmentation.yaml
-sbatch scripts/new/train --config mri/config/task/segmentation.yaml
-```
-
-You can pass selected runtime overrides on the CLI, for example:
-
-```bash
-sbatch scripts/new/train --config mri/config/task/segmentation.yaml --epochs 50 --batch_size 16
-```
-
-## Inference
-
-Set inference values in the config (especially `inference.checkpoint` and `inference.output_dir`), then run:
-
-```bash
-python mri/cli/infer.py --config mri/config/task/segmentation.yaml --split test
-python mri/cli/infer.py --config mri/config/task/classification.yaml --split test
-```
-
-HPC native launch:
-
-```bash
-bash scripts/new/inference --config mri/config/task/segmentation.yaml --split test
-sbatch scripts/new/inference --config mri/config/task/segmentation.yaml --split test
-```
-
-For the checkpoint-driven two-stage inference path without retraining:
-
-```bash
-python mri/cli/pipeline_infer.py --seg-checkpoint checkpoints/seg/<run>/<run>_best.pt --cls-checkpoint checkpoints/cls/<run>/<run>_best.pt --dry-run
-```
-
-## Native HPC Script Behavior
-
-`scripts/new/train` and `scripts/new/inference`:
-- run directly on node Python environment
-- support both direct run and `sbatch`
-- auto-load `.env` if present
-- auto-export runtime paths/caches (`DATA_DIR`, `CHECKPOINT_DIR`, `WANDB_DIR`, `TORCH_HOME`, `HF_HOME`)
-- use `srun` automatically inside a SLURM allocation
-
-Dry-run validation:
-
-```bash
-bash scripts/new/train --dry-run --config mri/config/task/segmentation.yaml
-bash scripts/new/inference --dry-run --config mri/config/task/segmentation.yaml --split test
-```
-
-## Sweeps And Downstream Promotion
-
-Launch a bounded grid sweep from a sweep config:
-
-```bash
-python mri/cli/sweep.py --config mri/config/sweep/segmentation/stack_depth_grid.yaml --dry-run
-python mri/cli/sweep.py --config mri/config/sweep/segmentation/stack_depth_grid.yaml
-```
-
-Promote the top-1 completed segmentation run into downstream classification preparation:
-
-```bash
-python mri/cli/sweep.py --downstream-config mri/config/sweep/classification/downstream_top1.yaml --dry-run
-```
-
-That downstream flow:
-- selects the best completed segmentation training run by Dice from local manifests
-- prepares segmentation inference jobs for downstream classification `train`, `val`, and `test`
-- wires the resulting prediction root into a generated classification sweep config
-- launches or dry-runs the downstream classification sweep
-
-## Local Research Workflow
-
-Run the full local workflow from aligned data import through downstream classification:
-
-```bash
-python mri/cli/research.py --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest-data data/aligned_v2 --split-file data/splits/<YYYY-MM-DD>.yaml --disable-wandb --dry-run
-python mri/cli/research.py --source-data /Users/huijokim/personal/tcia-handler/data/aligned_v2 --dest-data data/aligned_v2 --split-file data/splits/<YYYY-MM-DD>.yaml --disable-wandb
-```
-
-That workflow:
-- syncs or validates `data/aligned_v2`
-- generates or reuses one dated split file
-- trains segmentation and writes a best checkpoint
-- runs segmentation inference for `train`, `val`, and `test`
-- trains classification using those segmentation predictions
-- runs classification inference on the selected split
-
-## Smoke Workflow
-
-Run the checked-in 3-case CPU smoke test with one command:
-
-```bash
-bash scripts/new/research-smoke --dry-run
-bash scripts/new/research-smoke
-```
-
-That smoke workflow uses:
-- [segmentation_smoke.yaml](/Users/huijokim/personal/mri/mri/config/task/segmentation_smoke.yaml)
-- [classification_smoke.yaml](/Users/huijokim/personal/mri/mri/config/task/classification_smoke.yaml)
-- [smoke_3case.yaml](/Users/huijokim/personal/mri/data/splits/smoke_3case.yaml)
-
-It is intended only to verify the end-to-end pipeline on CPU, not to produce meaningful research metrics.
-
-## Configuration Contract
-
-Task configs are expected to define:
-- `task.name`: `segmentation` or `classification`
-- `data.metadata`
-- `data.split_file`
-- `model.name` and optional `model.params`
-- `train.*` and `inference.*` sections (missing fields fall back to `mri/config/defaults.yaml`)
-
-## Notes
-
-- This README reflects only the new architecture.
-- For production runs, prefer `scripts/new/*` on HPC and `mri/cli/*` locally.
-- Use the top-level `service/train.py` and `service/inference.py` only for compatibility with older scripts. Do not confuse this with `mri/service/pipeline.py`, which is the modern DICOM wrapper.
+Segmentation runs first; classification consumes the selected MRI inputs together with segmentation prediction outputs.

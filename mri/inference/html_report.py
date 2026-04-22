@@ -259,6 +259,28 @@ def generate_html_report(
         for t in target_ts
     ]
 
+    banner_by_ti: List[Dict[str, str]] = []
+    for t in target_ts:
+        slices = target_slices_by_threshold[t]
+        if slices:
+            ranges = _format_ranges(_contiguous_ranges(slices))
+            banner_by_ti.append({
+                "level": "warn",
+                "text": (
+                    f"Suspicious lesion regions on slices {ranges} at target "
+                    f"threshold {t:.2f}. Clinical review is recommended — "
+                    f"this tool is assistive and not a diagnostic conclusion."
+                ),
+            })
+        else:
+            banner_by_ti.append({
+                "level": "ok",
+                "text": (
+                    f"No lesion regions at target threshold {t:.2f}. "
+                    f"Try lower thresholds with the slider below."
+                ),
+            })
+
     summary_items = [
         ("case_id", html_lib.escape(case_id)),
         ("source_zip", _fmt_path(source_zip)),
@@ -304,18 +326,31 @@ def generate_html_report(
     .dot.gt-prostate { background: #00ff00; border: 1px solid #333; }
     .dot.gt-target { background: #00c8ff; border: 1px solid #333; }
     .legend { font-size: 12px; color: #555; margin: 8px 0 0; }
+    .banner { max-width: 900px; margin: 8px 0 12px; padding: 12px 16px; border-radius: 8px; font-size: 14px; line-height: 1.45; border: 1px solid; }
+    .banner.warn { background: #fff4e5; border-color: #f9a825; color: #6b3b00; }
+    .banner.ok { background: #e8f5e9; border-color: #66bb6a; color: #1b5e20; }
+    .banner .icon { font-weight: 700; margin-right: 6px; }
     """
 
     slider_disabled = "disabled" if len(target_ts) == 1 else ""
     target_ts_json = json.dumps(target_ts)
+    banner_json = json.dumps(banner_by_ti)
     script = (
         "<script>\n"
         f"const TARGET_TS = {target_ts_json};\n"
         f"const DEFAULT_IDX = {default_idx};\n"
+        f"const BANNER_BY_TI = {banner_json};\n"
         "function applyThreshold(ti) {\n"
         "  const t = TARGET_TS[ti];\n"
         "  const tval = document.getElementById('tval');\n"
         "  if (tval) tval.textContent = t.toFixed(2);\n"
+        "  const banner = document.getElementById('banner');\n"
+        "  if (banner) {\n"
+        "    const info = BANNER_BY_TI[ti];\n"
+        "    banner.className = 'banner ' + info.level;\n"
+        "    const icon = info.level === 'warn' ? '\\u26A0' : '\\u2713';\n"
+        "    banner.innerHTML = \"<span class='icon'>\" + icon + \"</span>\" + info.text;\n"
+        "  }\n"
         "  document.querySelectorAll('.slice').forEach(card => {\n"
         "    const tmax = parseFloat(card.dataset.tmax);\n"
         "    const phit = card.dataset.phit === '1';\n"
@@ -362,11 +397,22 @@ def generate_html_report(
         "</div>"
     )
 
+    initial_banner = banner_by_ti[default_idx]
+    initial_level = initial_banner["level"]
+    initial_icon = "⚠" if initial_level == "warn" else "✓"
+    banner_html = (
+        f"<div id='banner' class='banner {initial_level}'>"
+        f"<span class='icon'>{initial_icon}</span>"
+        f"{html_lib.escape(initial_banner['text'])}"
+        f"</div>"
+    )
+
     body = (
         f"<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>Segmentation report — {html_lib.escape(case_id)}</title>"
         f"<style>{style}</style></head><body>"
         f"<h1>Segmentation report — {html_lib.escape(case_id)}</h1>"
+        f"{banner_html}"
         f"<div class='summary'>{summary_html}</div>"
         f"{controls_html}"
         f"<p class='legend'>Yellow = prostate (≥ prostate_threshold), red = target (≥ slider target threshold). "
