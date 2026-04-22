@@ -13,22 +13,19 @@ For quick clinical inspection of a single study, a single-call wrapper (`mri/ser
 
 Prerequisite: [`uv`](https://docs.astral.sh/uv/).
 
-```bash
-# 1. Install dicom_mapper (DICOM preprocessing helper) first
-git clone git@github.com:ccomkhj/dicom_mapper.git
+`dicom_mapper` is declared as a sibling path dependency in `pyproject.toml`, so it must be cloned next to `cancer_detector` before `uv sync`.
 
-# 2. Clone cancer_detector alongside it, create one shared venv
+```bash
+# 1. Clone both repos side by side
+git clone git@github.com:ccomkhj/dicom_mapper.git
 git clone git@github.com:ccomkhj/cancer_detector.git
 cd cancer_detector
-uv venv --python 3.11
-source .venv/bin/activate
 
-# 3. Install dicom_mapper into the venv, then cancer_detector deps
-uv pip install -e ../dicom_mapper
-uv pip install -r requirements.txt
+# 2. Create the venv and install everything (including the editable dicom_mapper)
+uv sync
 
-# 4. Launch the clinician web UI (downloads the default model on first run)
-python -m mri.service.ui
+# 3. Launch the clinician web UI (downloads the default model on first run)
+uv run python -m mri.service.ui
 ```
 
 The UI opens at `http://127.0.0.1:7860/`. Drag in a vendor DICOM `.zip`, click **Analyze** to review metadata, then **Run segmentation** to generate the HTML report.
@@ -42,8 +39,8 @@ For the full research workflow (training, sweeps, HPC) see the researcher sectio
 ### Clinician (web UI)
 
 ```bash
-pip install -r requirements.txt
-python -m mri.service.ui
+uv sync
+uv run python -m mri.service.ui
 ```
 
 A browser tab opens at `http://127.0.0.1:7860/`. Upload a vendor DICOM `.zip`, click **Analyze** to review the detected patient metadata and T2 / ADC / CALC series, then click **Run segmentation**. The annotated HTML report opens in a new tab with a banner summarizing any suspected lesion slices.
