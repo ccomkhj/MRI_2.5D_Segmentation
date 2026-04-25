@@ -22,6 +22,7 @@ The root [README.md](../README.md) is the project overview. Use the guides below
 - [models.md](models.md): registered model families, where their presets live, what `model.params` keys they accept
 - [train.md](train.md): local training and native HPC training wrappers
 - [inference.md](inference.md): local inference and native HPC inference wrappers
+- [diagnostic.md](diagnostic.md): post-hoc error attribution and label audit
 - [dicom_wrapper.md](dicom_wrapper.md): one-call wrapper that takes a vendor DICOM zip and emits segmentation outputs + a self-contained HTML report
 - [sweeps.md](sweeps.md): segmentation sweeps and downstream top-1 promotion
 - [research.md](research.md): end-to-end local research workflow with generated configs and manifests
