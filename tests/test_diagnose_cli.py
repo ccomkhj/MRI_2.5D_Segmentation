@@ -116,9 +116,24 @@ def test_diagnose_main_end_to_end(tmp_path: Path) -> None:
     assert rc == 0
     diag = run_dir / "diagnostic"
     assert (diag / "predictions" / "case_00" / "prob.npz").exists()
+    assert (diag / "predictions" / "case_01" / "prob.npz").exists()
     assert (diag / "metrics_by_case.csv").exists()
     assert (diag / "metrics_by_class.csv").exists()
+    assert (diag / "label_audit.csv").exists()
     assert (diag / "report.html").exists()
-    html = (diag / "report.html").read_text()
+
+    import csv
+    with (diag / "metrics_by_case.csv").open() as f:
+        case_rows = list(csv.DictReader(f))
+    assert len(case_rows) == 2
+    case_ids = {r["case_id"] for r in case_rows}
+    assert case_ids == {"case_00", "case_01"}
+
+    with (diag / "label_audit.csv").open() as f:
+        audit_rows = list(csv.DictReader(f))
+    # case_01 has class_label=2 but empty GT lesion → class_mask_inconsistent fires.
+    assert any("class_mask_inconsistent" in r["flags"] for r in audit_rows), audit_rows
+
+    html = (diag / "report.html").read_text(encoding="utf-8")
     assert "Diagnostic" in html
-    assert "case_00" in html or "case_01" in html
+    assert "case_01" in html  # surfaced via audit queue (class_mask_inconsistent)
