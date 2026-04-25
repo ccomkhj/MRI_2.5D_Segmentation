@@ -4,22 +4,24 @@ This guide prepares a local development environment for the modular MRI pipeline
 
 ## Prerequisites
 
-- Conda is installed locally
+- [`uv`](https://docs.astral.sh/uv/) is installed locally
+- `dicom_mapper` is cloned next to `cancer_detector` (it is a path dependency in `pyproject.toml`)
 - You are running commands from the repository root
 - The aligned dataset source exists at `/Users/huijokim/personal/tcia-handler/data/aligned_v2`
 
 ## Create The Environment
 
 ```bash
-conda create -n mri python=3.12 -y
-conda activate mri
-python -m pip install -r requirements.txt
+uv sync
 ```
 
-`pytest` is useful for local validation and is not guaranteed to be included in `requirements.txt`:
+`uv sync` creates `.venv/` and installs the locked dependency set (including editable `dicom_mapper`). It also installs the `dev` dependency group, which provides `pytest` for local validation.
+
+Run commands without activating the venv:
 
 ```bash
-python -m pip install pytest
+uv run python -m mri.service.ui
+uv run pytest tests/test_smoke_configs.py -q
 ```
 
 ## Repository Assumptions
@@ -33,8 +35,8 @@ python -m pip install pytest
 Validate Python imports and basic smoke configs:
 
 ```bash
-python -m compileall mri service tools tests
-python -m pytest tests/test_smoke_configs.py -q
+uv run python -m compileall mri service tools tests
+uv run pytest tests/test_smoke_configs.py -q
 ```
 
 Check that the one-command smoke workflow resolves correctly:
