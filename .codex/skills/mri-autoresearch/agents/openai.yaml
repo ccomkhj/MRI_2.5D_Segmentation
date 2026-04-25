@@ -1,0 +1,4 @@
+interface:
+  display_name: "MRI Autoresearch"
+  short_description: "Run bounded MRI experiment loops"
+  default_prompt: "Use $mri-autoresearch to run a bounded experiment loop in this cancer detector repo and keep only evidence-backed changes."
