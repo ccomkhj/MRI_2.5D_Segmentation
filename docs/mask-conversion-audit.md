@@ -43,44 +43,72 @@ class3/case_0198, class3/case_0318  (val)
 
 ## Root cause
 
-The conversion pipeline has two scripts:
+`aligned_v2/` is produced by **`tcia-handler`**, not `cancer_detector`. The pipeline (`tcia-handler/service/preprocess.py:step_5_process_overlays`) shells out to `tcia-handler/tools/preprocessing/process_overlay_to_masks.py`, then `tcia-handler/service/mapping.py:CaseAligner.align_case` copies the resulting masks alongside resampled T2/ADC/CALC into `aligned_v2/`. There is **no DICOM-aware mask path** in this pipeline. Three failures compound:
 
-- `tools/preprocessing/process_overlay_to_masks.py` (488 lines) — voxelizes STL meshes in mesh-local coordinates without any DICOM alignment.
-- `tools/preprocessing/process_overlay_aligned.py` (567 lines) — DICOM-aware version that reads `ImagePositionPatient`, `PixelSpacing`, `ImageOrientationPatient`, transforms mesh vertices into image-voxel space, and rasterizes.
+### Failure 1 — mesh is voxelized in mesh-local space
 
-The directory name `aligned_v2/` suggests the aligned version is what was used. That script has the right structure but at least one identifiable bug at `tools/preprocessing/process_overlay_aligned.py:283-294`:
+`tcia-handler/tools/preprocessing/process_overlay_to_masks.py:187`:
 
 ```python
-# Get voxel grid bounds
-grid_origin = voxelized.transform[:3, 3]
-
-# Create output volume
-volume = np.zeros(dimensions[::-1], dtype=np.uint8)  # [slices, rows, cols]
-
-# Map voxel grid to volume
-# This is a simplified approach - may need refinement       <-- comment in source
-x_min, y_min, z_min = np.maximum(np.floor(grid_origin).astype(int), 0)
-x_max = min(x_min + voxel_grid.shape[0], dimensions[0])
-y_max = min(y_min + voxel_grid.shape[1], dimensions[1])
-z_max = min(z_min + voxel_grid.shape[2], dimensions[2])
-
-# Copy voxel data to volume
-x_end = min(voxel_grid.shape[0], x_max - x_min)
-y_end = min(voxel_grid.shape[1], y_max - y_min)
-z_end = min(voxel_grid.shape[2], z_max - z_min)
-
-if x_end > 0 and y_end > 0 and z_end > 0:
-    volume[z_min:z_max, y_min:y_max, x_min:x_max] = \
-        voxel_grid[:x_end, :y_end, :z_end].transpose(2, 1, 0)
+def mesh_to_voxel_grid(mesh, voxel_size=0.5):
+    voxelized = mesh.voxelized(pitch=voxel_size)
+    voxel_grid = voxelized.matrix
+    origin = voxelized.transform[:3, 3]   # CAPTURED but never returned to disk
+    return voxel_grid, origin
 ```
 
-The bug: when `grid_origin[i]` is negative (i.e. the mesh extends to voxel coordinates beyond the image's origin), the destination index is clipped to `0` via `np.maximum(..., 0)` but the source slice `voxel_grid[:x_end, ...]` is **not** cropped by the corresponding negative offset. The mask is silently shifted by `|grid_origin[i]|` voxels into the image — a translation bug, not a clipping bug.
+Two problems:
 
-For meshes that fit comfortably inside the image bounds (positive `grid_origin`), the rasterization is correct. For meshes whose bounding box extends to or past the image origin, the mask is shifted relative to the prostate by the truncated negative offset. This explains the *bimodal* leakage distribution — most cases are fine or have small leakage, a tail are catastrophically misaligned.
+- `pitch=0.5` is hardcoded — independent of the T2's `PixelSpacing`. T2 in-plane is ~0.5 mm so this happens to match in (x,y); T2 z-spacing is ~3 mm, so the mesh produces ~6× more z-slices than T2 needs.
+- The mesh's bounding-box position in patient space (the `origin` that `voxelized.transform` carries) is captured into a local variable and **never used** by anything downstream.
 
-A second smaller suspect: `voxel_grid[:x_end, :y_end, :z_end].transpose(2, 1, 0)` assumes trimesh's voxel matrix is in `[x, y, z]` order. Trimesh in fact uses `[i, j, k]` ordering matching its own coordinate system; the transposition that produces a `[slices, rows, cols]` output should be reviewed against trimesh's actual convention for the project's data orientation.
+The voxel grid is in patient-LPS-relative-to-mesh-bounding-box-corner. Slice index 0 of this grid is wherever the mesh's bounding box starts in physical space, not slice 0 of the T2 series.
 
-The aligned script's own author left the comment `# This is a simplified approach - may need refinement` on line 283. It was never refined.
+### Failure 2 — slices are written indexed by mesh-local z
+
+`tcia-handler/tools/preprocessing/process_overlay_to_masks.py:226-244`:
+
+```python
+for i in range(num_slices):
+    slice_data = voxel_grid[:, :, i]
+    if not slice_data.any(): continue
+    img.save(output_dir / f"{i:04d}.png")
+```
+
+`i` here is the mesh-voxel-grid Z index. The file `0000.png` is the bottom of the mesh's bounding box, not slice 0 of the patient anatomy.
+
+### Failure 3 — `align_case` pairs masks with T2 by index, not by physical position
+
+`tcia-handler/service/mapping.py:603-714`. ADC and CALC are correctly resampled with SITK:
+
+```python
+adc_resampled = self.resample_to_reference(adc_volume, t2_volume)
+self.save_sitk_as_pngs(adc_resampled, output_dir / "adc")
+```
+
+For masks, however (lines 668-703):
+
+```python
+for i in range(mapping.t2.num_slices):
+    src_mask = struct_dir / f"{i:04d}.png"
+    if src_mask.exists():
+        mask = np.array(Image.open(src_mask))
+        if mask.shape != (t2_volume.GetSize()[1], t2_volume.GetSize()[0]):
+            mask = ... resize NEAREST ...
+        Image.fromarray(mask).save(dst_mask)
+    else:
+        Image.fromarray(np.zeros(...)).save(dst_mask)
+```
+
+There is no `resample_to_reference` call for masks. They're just copied (with optional in-plane resize). T2 slice 0 is paired with mesh-voxel-grid slice 0; T2 slice 1 with mesh-voxel-grid slice 1; etc. Two completely independent coordinate systems are silently treated as identical.
+
+### Why the leakage is bimodal
+
+When the mesh's bounding-box origin happens to coincide with T2 slice 0 in physical space *and* the mesh's z-extent matches the T2 z-extent for that anatomy, the index pairing happens to align — and the mask looks correct. When either fails, the mask is rotated/shifted by an arbitrary amount. That's exactly what the data shows: most cases small/no leakage, a tail catastrophic.
+
+### Note on the apparently-fixed copy in cancer_detector
+
+`cancer_detector/tools/preprocessing/process_overlay_aligned.py` is a DICOM-aware rewrite that reads `ImagePositionPatient` / `ImageOrientationPatient` / `PixelSpacing` and transforms mesh vertices into T2 voxel space. **It was never wired into the production pipeline** — `tcia-handler/service/preprocess.py:225` shells out to the non-aligned script. The aligned variant also has its own bug (the negative-origin clipping at lines 283-294 that this audit originally identified) and is incomplete (`# This is a simplified approach - may need refinement` on line 283). Either fix and deploy that script, or write a fresh one — but do not assume that script as-is is correct.
 
 ## Why this didn't get caught earlier
 
@@ -95,19 +123,28 @@ The current segmentation leader's `val/threshold_sweep_target_best_dice = 0.40` 
 
 ## Recommended next steps, in order
 
-### 1. Fix the rasterization bug (highest priority, probably 30–60 minutes of work)
+### 1. Replace the mask path in `tcia-handler` with a DICOM-aware rasterizer (highest priority)
 
-In `tools/preprocessing/process_overlay_aligned.py:rasterize_mesh_to_slices`, the negative-origin case must crop the source voxel grid by the negative offset, not just clip the destination index. Concretely:
+Two viable approaches, in increasing order of work:
 
-```python
-src_x0 = max(0, -int(np.floor(grid_origin[0])))
-src_y0 = max(0, -int(np.floor(grid_origin[1])))
-src_z0 = max(0, -int(np.floor(grid_origin[2])))
-x_min  = max(0, int(np.floor(grid_origin[0])))
-# ... and copy voxel_grid[src_x0:..., src_y0:..., src_z0:...] into volume[z_min:..., y_min:..., x_min:...]
-```
+**Option A — DICOM-aware mesh rasterization (preferred).** Add a new `process_overlay_aligned.py` to `tcia-handler/tools/preprocessing/` that, for each STL mesh:
 
-Plus an explicit unit test on a synthetic mesh whose bounding box extends to negative voxel coordinates, asserting the resulting volume has the mesh placed at the correct image-voxel position.
+1. Loads the T2 reference DICOM geometry (origin, spacing, direction).
+2. Transforms mesh vertices from physical (LPS) into T2 voxel space using `voxel = inv(direction) @ (physical - origin) / spacing`.
+3. Voxelizes / rasterizes the transformed mesh **directly into a `(num_t2_slices, H, W)` volume at T2 voxel resolution** — no separate mesh-local grid, no later resampling.
+4. Saves PNGs `0000.png` through `(num_t2_slices-1):04d.png`, one per T2 slice (zeros for empty slices, so `align_case` doesn't have to fill in).
+
+Wire `tcia-handler/service/preprocess.py:step_5_process_overlays` to call this script. Drop the mask-copy block in `align_case` (or leave it as a no-op since the masks are already in T2 grid).
+
+**Option B — Make `align_case` actually resample masks.** Keep `process_overlay_to_masks.py` as-is for the rasterization, but in `align_case`:
+
+1. Load the mesh-local PNG series with proper `sitk.SetSpacing` (use the 0.5 mm pitch from the converter) and `sitk.SetOrigin` (use the `voxelized.transform[:3, 3]` — but this requires `process_overlay_to_masks.py` to also persist the origin alongside the PNGs, e.g. as a `geometry.json` next to them).
+2. Call `self.resample_to_reference(mask_volume, t2_volume, interpolator=sitk.sitkNearestNeighbor)` exactly the way ADC and CALC are handled.
+3. Save the resampled volume as PNGs.
+
+Option B reuses more of the existing structure but requires a sidecar geometry file that doesn't exist today. Option A is cleaner and self-contained.
+
+Either option needs an explicit unit test: a synthetic mesh whose bounding box is offset from the image origin in patient space, rasterized through the new pipeline, then checked against an expected volume that places the mesh at the correct image-voxel position (not the corner).
 
 ### 2. Investigate the 10 "no mask at all" cases
 
