@@ -18,7 +18,7 @@ Per-case heuristics live in ``audit_case``; cohort-level ones (4 and 6) live in
 from __future__ import annotations
 
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence
 
@@ -55,6 +55,11 @@ def _component_sizes(labeled: np.ndarray, n: int) -> np.ndarray:
     if n == 0:
         return np.array([], dtype=np.int64)
     return np.bincount(labeled.ravel())[1 : n + 1]
+
+
+def _min_n_for_pct(pct: float) -> int:
+    """Minimum cohort size for a percent-tail cut to flag fewer than 100% of cases."""
+    return int(np.ceil(100.0 / pct))
 
 
 def _check_class_mask_inconsistent(
@@ -180,21 +185,24 @@ def audit_cohort(
     """Run cohort-level heuristics that need the full distribution.
 
     Heuristics:
-    - gt_volume_outlier: top/bottom N% of non-empty GT volumes (priority 3)
-    - class_severity_mismatch: pred mass outlier within a class (priority 2)
+    - gt_volume_outlier (priority 3): top/bottom N% of non-empty GT volumes.
+      Requires at least ``ceil(100/pct)`` non-empty cases (e.g. 20 for pct=5).
+    - class_severity_mismatch (priority 2): asymmetric — only class 1 (top-tail)
+      and class 4 (bottom-tail) can fire. Requires at least ``ceil(100/pct)``
+      cases in the relevant class bucket.
     """
     cfg = {**AUDIT_DEFAULTS, **(defaults or {})}
     findings: List[AuditFinding] = []
 
     # Volume outliers among non-empty GT cases.
+    pct = float(cfg["volume_outlier_pct"])
     nonzero = [c for c in cases if c.gt_lesion_volume > 0]
-    if len(nonzero) >= 2:
+    if len(nonzero) >= _min_n_for_pct(pct):
         volumes = np.array([c.gt_lesion_volume for c in nonzero], dtype=np.float64)
-        pct = float(cfg["volume_outlier_pct"])
         lo = np.percentile(volumes, pct)
         hi = np.percentile(volumes, 100 - pct)
         for c, v in zip(nonzero, volumes):
-            if v <= lo or v >= hi:
+            if v < lo or v > hi:
                 findings.append(AuditFinding(
                     case_id=c.case_id, class_label=c.class_label,
                     flag="gt_volume_outlier", priority=3,
@@ -206,20 +214,23 @@ def audit_cohort(
     for c in cases:
         by_class.setdefault(c.class_label, []).append(c)
     pct = float(cfg["severity_mismatch_outlier_pct"])
+    min_group = _min_n_for_pct(pct)
     for class_label, group in by_class.items():
-        if len(group) < 2:
+        if class_label not in (1, 4):
+            continue
+        if len(group) < min_group:
             continue
         masses = np.array([c.pred_lesion_mass for c in group], dtype=np.float64)
         lo = np.percentile(masses, pct)
         hi = np.percentile(masses, 100 - pct)
         for c, m in zip(group, masses):
-            if class_label == 1 and m >= hi:
+            if class_label == 1 and m > hi:
                 findings.append(AuditFinding(
                     case_id=c.case_id, class_label=class_label,
                     flag="class_severity_mismatch", priority=2,
                     reason=f"class_label=1 but pred lesion mass ({m:.1f}) is in the top {pct:.1f}% of class 1",
                 ))
-            elif class_label == 4 and m <= lo:
+            elif class_label == 4 and m < lo:
                 findings.append(AuditFinding(
                     case_id=c.case_id, class_label=class_label,
                     flag="class_severity_mismatch", priority=2,
@@ -234,7 +245,7 @@ def write_audit_csv(findings: Iterable[AuditFinding], path: Path) -> None:
     for f in findings:
         by_case.setdefault((f.case_id, f.class_label), []).append(f)
     for (case_id, class_label), fs in sorted(by_case.items(), key=lambda kv: (min(f.priority for f in kv[1]), kv[0][0])):
-        flags = ";".join(f.flag for f in fs)
+        flags = "; ".join(f.flag for f in fs)
         priority = min(f.priority for f in fs)
         reason = "; ".join(f.reason for f in fs)
         rows.append({
