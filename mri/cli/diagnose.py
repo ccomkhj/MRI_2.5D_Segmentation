@@ -73,7 +73,8 @@ def _create_segmentation_model(name: str, **params):
 def _build_model_and_dataloader(cfg: Dict[str, Any], split: str):
     """Build the val dataloader the same way ``mri/cli/infer.py:_build_dataloader`` does.
 
-    Returns (dataloader, num_slices_per_case, spatial_shape).
+    Returns (dataloader, num_slices_per_case). The spatial shape is discovered
+    from the first batch by ``dump_predictions``, not hardcoded here.
     """
     from torch.utils.data import DataLoader
     from mri.data.metadata import load_metadata
@@ -106,9 +107,7 @@ def _build_model_and_dataloader(cfg: Dict[str, Any], split: str):
         if cid not in num_slices_per_case:
             num_slices_per_case[cid] = int(meta.cases[cid]["num_slices"])
 
-    # Spatial shape is fixed at 256x256 by SegmentationDataset (see _load_image).
-    spatial_shape = (256, 256)
-    return loader, num_slices_per_case, spatial_shape
+    return loader, num_slices_per_case
 
 
 def _resolve_lesion_threshold(cfg: Dict[str, Any]) -> float:
@@ -132,6 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import yaml
     from mri.diagnostics.attribute import (
         attribute_case, write_metrics_by_case, write_metrics_by_class, aggregate_by_class,
+        CaseAttribution,
     )
     from mri.diagnostics.audit import audit_case, audit_cohort, write_audit_csv, CohortCase
     from mri.diagnostics.dump import dump_predictions
@@ -158,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     predictions_dir = diag_root / "predictions"
     diag_root.mkdir(parents=True, exist_ok=True)
 
-    loader, num_slices_per_case, spatial_shape = _build_model_and_dataloader(cfg, args.split)
+    loader, num_slices_per_case = _build_model_and_dataloader(cfg, args.split)
     model = _create_segmentation_model(cfg["model"]["name"], **(cfg["model"].get("params") or {}))
     _load_checkpoint(model, paths.checkpoint, device)
 
@@ -168,10 +168,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         device=device,
         output_dir=predictions_dir,
         num_slices_per_case=num_slices_per_case,
-        spatial_shape=spatial_shape,
         force=args.force,
+        lesion_threshold=lesion_threshold,
+        gland_threshold=gland_threshold,
     )
     print(f"[diagnose] dump: {dump_summary}")
+    failed_case_ids = set(dump_summary.get("cases_failed_inference", []))
 
     # Attribution + audit pass.
     case_attrs = []
@@ -181,6 +183,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     for case_id in num_slices_per_case:
         case_dir = predictions_dir / case_id
         if not (case_dir / "prob.npz").exists():
+            if case_id in failed_case_ids:
+                case_attrs.append(CaseAttribution(
+                    case_id=case_id, class_label=0,
+                    dice=float("nan"), precision=float("nan"), recall=float("nan"),
+                    fp_voxels_inside_gland=0, fp_voxels_outside_gland=0,
+                    fn_voxels=0, tp_voxels=0,
+                    fp_outside_ratio=float("nan"),
+                    gland_dice=float("nan"),
+                    lesion_volume_gt_voxels=0,
+                    status="failed",
+                ))
             continue
         try:
             gland_prob, lesion_prob, gland_gt, lesion_gt, class_label = _load_per_case_artifact(predictions_dir, case_id)
@@ -209,6 +222,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"[diagnose] skipped {case_id}: {type(exc).__name__}: {exc}",
                 stacklevel=2,
             )
+            case_attrs.append(CaseAttribution(
+                case_id=case_id, class_label=0,
+                dice=float("nan"), precision=float("nan"), recall=float("nan"),
+                fp_voxels_inside_gland=0, fp_voxels_outside_gland=0,
+                fn_voxels=0, tp_voxels=0,
+                fp_outside_ratio=float("nan"),
+                gland_dice=float("nan"),
+                lesion_volume_gt_voxels=0,
+                status="failed",
+            ))
             continue
         case_attrs.append(attr)
         findings.extend(case_findings)

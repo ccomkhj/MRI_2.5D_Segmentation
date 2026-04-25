@@ -52,7 +52,6 @@ def test_dump_writes_per_case_artifacts(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         output_dir=out_dir,
         num_slices_per_case={"case_00": 4, "case_01": 4},
-        spatial_shape=(8, 8),
     )
 
     assert summary["cases_written"] == 2
@@ -80,6 +79,8 @@ def test_dump_writes_per_case_artifacts(tmp_path: Path) -> None:
         assert meta["spatial_shape"] == [8, 8]
         assert meta["predicted_slices"] == [0, 1, 2, 3]
         assert meta["num_slices"] == 4
+        assert meta["lesion_threshold"] is None  # not passed by this test
+        assert meta["gland_threshold"] is None
 
 
 def test_dump_skips_cached_cases(tmp_path: Path) -> None:
@@ -99,7 +100,6 @@ def test_dump_skips_cached_cases(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         output_dir=out_dir,
         num_slices_per_case={"case_00": 4},
-        spatial_shape=(8, 8),
         force=False,
     )
 
@@ -124,7 +124,6 @@ def test_dump_force_overrides_cache(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         output_dir=out_dir,
         num_slices_per_case={"case_00": 4},
-        spatial_shape=(8, 8),
         force=True,
     )
 
@@ -152,7 +151,6 @@ def test_dump_handles_list_of_dicts_meta(tmp_path: Path) -> None:
         device=torch.device("cpu"),
         output_dir=out_dir,
         num_slices_per_case={"case_xx": 3},
-        spatial_shape=(8, 8),
     )
 
     assert summary["cases_written"] == 1
@@ -180,5 +178,42 @@ def test_dump_raises_on_out_of_range_slice_idx(tmp_path: Path) -> None:
             device=torch.device("cpu"),
             output_dir=out_dir,
             num_slices_per_case={"case_x": 4},
-            spatial_shape=(8, 8),
         )
+
+
+def test_dump_threshold_persisted_when_provided(tmp_path: Path) -> None:
+    out_dir = tmp_path / "predictions"
+    model = _StubModel()
+    loader = _stub_dataloader(num_cases=1, slices_per_case=2)
+
+    dump_predictions(
+        model=model, dataloader=loader, device=torch.device("cpu"),
+        output_dir=out_dir,
+        num_slices_per_case={"case_00": 2},
+        lesion_threshold=0.42, gland_threshold=0.5,
+    )
+
+    meta = json.loads((out_dir / "case_00" / "meta.json").read_text())
+    assert meta["lesion_threshold"] == 0.42
+    assert meta["gland_threshold"] == 0.5
+
+
+def test_dump_isolates_inference_failure(tmp_path: Path) -> None:
+    out_dir = tmp_path / "predictions"
+
+    class _BrokenModel(torch.nn.Module):
+        def forward(self, x):
+            raise RuntimeError("boom")
+
+    loader = _stub_dataloader(num_cases=1, slices_per_case=2)
+
+    summary = dump_predictions(
+        model=_BrokenModel(), dataloader=loader, device=torch.device("cpu"),
+        output_dir=out_dir,
+        num_slices_per_case={"case_00": 2},
+    )
+
+    assert summary["cases_written"] == 0
+    assert summary["cases_failed_inference"] == ["case_00"]
+    # No artifacts should have been written for the failed case.
+    assert not (out_dir / "case_00" / "prob.npz").exists()
