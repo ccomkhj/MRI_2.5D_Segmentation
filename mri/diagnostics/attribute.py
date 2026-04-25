@@ -97,9 +97,7 @@ def attribute_case(
         denom_ratio = fp_total + tp_n
         fp_outside_ratio = (fp_outside_n / denom_ratio) if denom_ratio > 0 else float("nan")
 
-    pred_lesion_in_gland = np.logical_and(pred_lesion_bin, gt_gland_bin)
-    gt_lesion_in_gland = np.logical_and(gt_lesion_bin, gt_gland_bin)
-    gland_dice = _dice(pred_lesion_in_gland, gt_lesion_in_gland)
+    gland_dice = _dice(pred_gland_bin, gt_gland_bin)
 
     return CaseAttribution(
         case_id=case_id,

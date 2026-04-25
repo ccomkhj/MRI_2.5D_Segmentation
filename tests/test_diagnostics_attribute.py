@@ -23,7 +23,7 @@ def test_perfect_prediction_has_dice_one_and_no_fp() -> None:
     gt_lesion[1, 1, 1] = 1
     gt_gland = np.ones_like(gt_lesion)
     pred_lesion_prob = (gt_lesion > 0).astype(np.float32)  # already 0/1
-    pred_gland_prob = pred_lesion_prob.copy()
+    pred_gland_prob = gt_gland.astype(np.float32)
 
     out = attribute_case(
         case_id="c1",
