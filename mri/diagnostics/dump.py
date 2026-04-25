@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping
 
 import numpy as np
 import torch
@@ -90,11 +90,17 @@ def dump_predictions(
             mask_np = masks.cpu().numpy() if isinstance(masks, torch.Tensor) else masks
 
             for i, m in enumerate(meta_list):
-                case_id = str(m["case_id"])
+                case_id = m["case_id"]
                 if case_id not in buffers:
                     continue  # cached or not in scope
                 slice_idx = int(m["slice_idx"])
                 buf = buffers[case_id]
+                if slice_idx >= buf["gland_prob"].shape[0]:
+                    raise ValueError(
+                        f"slice_idx={slice_idx} out of range for case {case_id} "
+                        f"(num_slices={buf['gland_prob'].shape[0]}); "
+                        "metadata index may be stale"
+                    )
                 buf["gland_prob"][slice_idx] = probs[i, 0]
                 if probs.shape[1] > 1:
                     buf["lesion_prob"][slice_idx] = probs[i, 1]
@@ -132,8 +138,15 @@ def dump_predictions(
         (case_dir / "meta.json").write_text(json.dumps(meta_doc, indent=2))
         cases_written += 1
 
+    cases_incomplete = sum(
+        1
+        for buf in buffers.values()
+        if len(buf["predicted_slices"]) < buf["gland_prob"].shape[0]
+    )
+
     return {
         "cases_written": cases_written,
         "cases_skipped_cached": len(cached),
+        "cases_incomplete": cases_incomplete,
         "output_dir": str(output_dir),
     }
