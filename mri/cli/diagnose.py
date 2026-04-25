@@ -8,7 +8,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import sys
+import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,7 +124,6 @@ def _load_per_case_artifact(predictions_dir: Path, case_id: str) -> tuple[np.nda
     case_dir = predictions_dir / case_id
     prob = np.load(case_dir / "prob.npz")
     gt = np.load(case_dir / "gt.npz")
-    import json
     meta = json.loads((case_dir / "meta.json").read_text())
     return prob["gland"], prob["lesion"], gt["gland"], gt["lesion"], int(meta.get("class_label", 0))
 
@@ -183,28 +182,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         case_dir = predictions_dir / case_id
         if not (case_dir / "prob.npz").exists():
             continue
-        gland_prob, lesion_prob, gland_gt, lesion_gt, class_label = _load_per_case_artifact(predictions_dir, case_id)
-        attr = attribute_case(
-            case_id=case_id, class_label=class_label,
-            pred_lesion_prob=lesion_prob, pred_gland_prob=gland_prob,
-            gt_lesion=lesion_gt, gt_gland=gland_gt,
-            lesion_threshold=lesion_threshold, gland_threshold=gland_threshold,
-        )
+        try:
+            gland_prob, lesion_prob, gland_gt, lesion_gt, class_label = _load_per_case_artifact(predictions_dir, case_id)
+            attr = attribute_case(
+                case_id=case_id, class_label=class_label,
+                pred_lesion_prob=lesion_prob, pred_gland_prob=gland_prob,
+                gt_lesion=lesion_gt, gt_gland=gland_gt,
+                lesion_threshold=lesion_threshold, gland_threshold=gland_threshold,
+            )
+            case_findings = audit_case(
+                case_id=case_id, class_label=class_label,
+                pred_lesion_prob=lesion_prob, pred_gland_prob=gland_prob,
+                gt_lesion=lesion_gt, gt_gland=gland_gt,
+            )
+            cohort_case = CohortCase(
+                case_id=case_id, class_label=class_label,
+                gt_lesion_volume=int(lesion_gt.sum()),
+                pred_lesion_mass=float(lesion_prob.sum()),
+            )
+            artifact = CaseArtifact(
+                case_id=case_id, class_label=class_label,
+                pred_lesion_prob=lesion_prob, gt_lesion=lesion_gt,
+            )
+        except Exception as exc:  # noqa: BLE001 — per-case error isolation
+            warnings.warn(
+                f"[diagnose] skipped {case_id}: {type(exc).__name__}: {exc}",
+                stacklevel=2,
+            )
+            continue
         case_attrs.append(attr)
-        findings.extend(audit_case(
-            case_id=case_id, class_label=class_label,
-            pred_lesion_prob=lesion_prob, pred_gland_prob=gland_prob,
-            gt_lesion=lesion_gt, gt_gland=gland_gt,
-        ))
-        cohort_cases.append(CohortCase(
-            case_id=case_id, class_label=class_label,
-            gt_lesion_volume=int(lesion_gt.sum()),
-            pred_lesion_mass=float(lesion_prob.sum()),
-        ))
-        artifacts[case_id] = CaseArtifact(
-            case_id=case_id, class_label=class_label,
-            pred_lesion_prob=lesion_prob, gt_lesion=lesion_gt,
-        )
+        findings.extend(case_findings)
+        cohort_cases.append(cohort_case)
+        artifacts[case_id] = artifact
     findings.extend(audit_cohort(cohort_cases))
 
     write_metrics_by_case(case_attrs, diag_root / "metrics_by_case.csv")
