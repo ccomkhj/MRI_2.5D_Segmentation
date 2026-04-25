@@ -56,6 +56,8 @@ def test_dump_writes_per_case_artifacts(tmp_path: Path) -> None:
     )
 
     assert summary["cases_written"] == 2
+    assert summary["cases_skipped_cached"] == 0
+    assert summary["cases_incomplete"] == 0
     for case_id in ("case_00", "case_01"):
         case_dir = out_dir / case_id
         assert (case_dir / "prob.npz").exists()
@@ -74,8 +76,10 @@ def test_dump_writes_per_case_artifacts(tmp_path: Path) -> None:
 
         meta = json.loads((case_dir / "meta.json").read_text())
         assert meta["case_id"] == case_id
-        assert "class_label" in meta
+        assert meta["class_label"] == int(case_id.split("_")[1]) + 1
         assert meta["spatial_shape"] == [8, 8]
+        assert meta["predicted_slices"] == [0, 1, 2, 3]
+        assert meta["num_slices"] == 4
 
 
 def test_dump_skips_cached_cases(tmp_path: Path) -> None:
@@ -126,3 +130,55 @@ def test_dump_force_overrides_cache(tmp_path: Path) -> None:
 
     assert summary["cases_skipped_cached"] == 0
     assert (case_dir / "gt.npz").exists()
+
+
+def test_dump_handles_list_of_dicts_meta(tmp_path: Path) -> None:
+    """When the dataloader collates meta as a list-of-dicts (not dict-of-lists),
+    the dump still indexes per-case correctly and case_id stays a plain string."""
+    out_dir = tmp_path / "predictions"
+    model = _StubModel()
+
+    batches = []
+    for slice_idx in range(3):
+        images = torch.zeros(1, 5, 8, 8)
+        masks = torch.zeros(1, 2, 8, 8)
+        masks[0, 0, 2:6, 2:6] = 1
+        meta_list = [{"case_id": "case_xx", "slice_idx": slice_idx, "class": 3}]
+        batches.append((images, masks, meta_list))
+
+    summary = dump_predictions(
+        model=model,
+        dataloader=batches,
+        device=torch.device("cpu"),
+        output_dir=out_dir,
+        num_slices_per_case={"case_xx": 3},
+        spatial_shape=(8, 8),
+    )
+
+    assert summary["cases_written"] == 1
+    assert summary["cases_incomplete"] == 0
+    case_dir = out_dir / "case_xx"
+    assert (case_dir / "prob.npz").exists()
+    meta = json.loads((case_dir / "meta.json").read_text())
+    assert meta["case_id"] == "case_xx"
+    assert meta["class_label"] == 3
+
+
+def test_dump_raises_on_out_of_range_slice_idx(tmp_path: Path) -> None:
+    out_dir = tmp_path / "predictions"
+    model = _StubModel()
+
+    images = torch.zeros(1, 5, 8, 8)
+    masks = torch.zeros(1, 2, 8, 8)
+    meta = {"case_id": ["case_x"], "slice_idx": [99], "class": [1]}
+    batches = [(images, masks, meta)]
+
+    with pytest.raises(ValueError, match="slice_idx=99 out of range"):
+        dump_predictions(
+            model=model,
+            dataloader=batches,
+            device=torch.device("cpu"),
+            output_dir=out_dir,
+            num_slices_per_case={"case_x": 4},
+            spatial_shape=(8, 8),
+        )
