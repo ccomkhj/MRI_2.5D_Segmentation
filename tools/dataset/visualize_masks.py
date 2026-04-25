@@ -45,6 +45,40 @@ _GT_LESION_RGB = (0, 200, 255)  # cyan (matches mri/inference/html_report.py con
 _GT_PROSTATE_RGB = (255, 255, 0)  # yellow
 
 
+class PngSink:
+    """Where the panel PNGs live.
+
+    Two modes:
+      - ``embed=True``  → return base64 ``data:`` URIs (single self-contained HTML).
+      - ``embed=False`` → write each PNG into ``asset_dir`` and return a relative path.
+        The HTML stays small and ``<img loading="lazy">`` lets the browser decode only
+        thumbnails near the viewport — works at cohort scale where embedding doesn't.
+    """
+
+    def __init__(self, embed: bool, asset_dir: Path | None, html_dir: Path) -> None:
+        self.embed = embed
+        self.asset_dir = asset_dir
+        self.html_dir = html_dir
+        self._counter = 0
+        if not embed:
+            assert asset_dir is not None
+            asset_dir.mkdir(parents=True, exist_ok=True)
+
+    def write(self, rgb: np.ndarray, key: str) -> str:
+        """Return either a data URI (embed=True) or a relative-to-HTML path."""
+        if self.embed:
+            return "data:image/png;base64," + _png_b64_from_array(rgb)
+        path = self.asset_dir / f"{key}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(rgb if rgb.dtype == np.uint8 else np.clip(rgb, 0, 255).astype(np.uint8)).save(path)
+        # Use a path relative to the HTML's directory so the file is portable.
+        try:
+            rel = path.relative_to(self.html_dir)
+        except ValueError:
+            rel = path  # different drive — fall back to absolute
+        return str(rel)
+
+
 def _load_volume(d: Path) -> np.ndarray | None:
     """Load a directory of indexed PNGs as a (Z, H, W) uint8 volume."""
     if not d.exists():
@@ -105,15 +139,15 @@ def _pick_slice_strip(
     ]
 
 
-def _t2_plain_png(t2_slice: np.ndarray) -> str:
-    return _png_b64_from_array(_base_rgb(t2_slice, t2_slice.shape))
+def _t2_plain_rgb(t2_slice: np.ndarray) -> np.ndarray:
+    return _base_rgb(t2_slice, t2_slice.shape)
 
 
-def _t2_with_mask_png(t2_slice: np.ndarray, prostate_mask: np.ndarray, lesion_mask: np.ndarray) -> str:
+def _t2_with_mask_rgb(t2_slice: np.ndarray, prostate_mask: np.ndarray, lesion_mask: np.ndarray) -> np.ndarray:
     base = _base_rgb(t2_slice, t2_slice.shape)
     out = _alpha_blend(base, _GT_PROSTATE_RGB, (prostate_mask > 127).astype(np.float32) * 0.25)
     out = _alpha_blend(out, _GT_LESION_RGB, (lesion_mask > 127).astype(np.float32) * 0.55)
-    return _png_b64_from_array(out)
+    return out
 
 
 def _leakage_ratio(prostate: np.ndarray, lesion: np.ndarray) -> float | None:
@@ -154,38 +188,35 @@ def _modality_panels(
     lesion: np.ndarray,
     label: str,
     placeholder_shape: tuple[int, int],
+    sink: PngSink,
+    case_id: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Return (plain_panels, overlay_panels) for one modality at the given slices.
-
-    The overlays use ``prostate`` and ``lesion`` (already in the modality's grid because
-    mapping.py resampled ADC and CALC onto the T2 grid). Falls back to a blank panel set
-    when the modality directory is missing on disk.
-    """
+    """Return (plain_panels, overlay_panels) for one modality at the given slices."""
     vol = _load_volume(case_dir / modality)
     plain: list[dict] = []
     overlay: list[dict] = []
+    safe_case = case_id.replace("/", "_")
     if vol is None:
-        # Modality dir absent — emit blank placeholders so layout stays consistent.
         h, w = placeholder_shape
-        blank = _png_b64_from_array(np.zeros((h, w, 3), dtype=np.uint8))
+        blank_arr = np.zeros((h, w, 3), dtype=np.uint8)
         for z in slice_idxs:
-            plain.append({"title": f"{modality.upper()} z={z} (missing)", "png_b64": blank})
-            overlay.append({"title": f"{modality.upper()}+GT[{label}] z={z} (missing)", "png_b64": blank})
+            blank_src = sink.write(blank_arr, f"{safe_case}/{label}_{modality}_blank_z{z}")
+            plain.append({"title": f"{modality.upper()} z={z} (missing)", "src": blank_src})
+            overlay.append({"title": f"{modality.upper()}+GT[{label}] z={z} (missing)", "src": blank_src})
         return plain, overlay
     for z in slice_idxs:
         cz = min(z, vol.shape[0] - 1)
-        plain.append({"title": f"{modality.upper()} z={cz}", "png_b64": _t2_plain_png(vol[cz])})
-        # Mask volumes are at T2 grid; ADC/CALC have been resampled to T2 so cz is the same z.
-        # If shapes happen to differ for some pathological case, fall back to plain.
+        plain_src = sink.write(_t2_plain_rgb(vol[cz]), f"{safe_case}/{label}_{modality}_plain_z{cz}")
+        plain.append({"title": f"{modality.upper()} z={cz}", "src": plain_src})
         if prostate.shape == vol.shape and lesion.shape == vol.shape:
-            overlay.append({
-                "title": f"{modality.upper()}+GT[{label}] z={cz}",
-                "png_b64": _t2_with_mask_png(vol[cz], prostate[cz], lesion[cz]),
-            })
+            overlay_arr = _t2_with_mask_rgb(vol[cz], prostate[cz], lesion[cz])
+            overlay_src = sink.write(overlay_arr, f"{safe_case}/{label}_{modality}_overlay_z{cz}")
+            overlay.append({"title": f"{modality.upper()}+GT[{label}] z={cz}", "src": overlay_src})
         else:
+            fallback_src = sink.write(_t2_plain_rgb(vol[cz]), f"{safe_case}/{label}_{modality}_fallback_z{cz}")
             overlay.append({
                 "title": f"{modality.upper()}+GT[{label}] z={cz} (shape mismatch)",
-                "png_b64": _t2_plain_png(vol[cz]),
+                "src": fallback_src,
             })
     return plain, overlay
 
@@ -196,6 +227,7 @@ def _render_case_row(
     compare_root: Path | None,
     n_strip: int = 5,
     modalities: tuple[str, ...] = ("t2", "adc", "calc"),
+    sink: PngSink | None = None,
 ) -> dict | None:
     """Build the per-case dict consumed by the HTML renderer.
 
@@ -233,12 +265,17 @@ def _render_case_row(
     slice_idxs = _pick_slice_strip(strip_lesion, strip_prostate, t2.shape[0], n_strip)
     placeholder_shape = (t2.shape[1], t2.shape[2])
 
+    # Default to embedding when called without a sink (preserves the function's old API).
+    if sink is None:
+        sink = PngSink(embed=True, asset_dir=None, html_dir=Path.cwd())
+
     # Build per-modality panel sets for the primary root and (optionally) the compare root.
     primary_label = root.name
     panels_by_modality: dict[str, dict] = {}
     for modality in modalities:
         plain, overlay = _modality_panels(
             case_dir, modality, slice_idxs, prostate, lesion, primary_label, placeholder_shape,
+            sink, case_id,
         )
         panels_by_modality[modality] = {"plain": plain, "overlay_primary": overlay}
 
@@ -247,19 +284,21 @@ def _render_case_row(
         c_case_dir = compare_root / case_id
         c_prostate_full = compare_prostate
         c_lesion_full = compare_lesion
-        # If compare root masks didn't match the primary T2 shape, fall back to whatever
-        # is on disk for that root (its own T2 shape).
         if c_prostate_full is None:
             c_prostate_full = _load_volume(c_case_dir / "mask_prostate")
         if c_lesion_full is None:
             c_lesion_full = _load_volume(c_case_dir / "mask_target1")
         c_t2 = _load_volume(c_case_dir / "t2")
         if c_t2 is None:
-            # Compare root has no T2 for this case — emit blanks for every modality.
-            blank = _png_b64_from_array(np.zeros((placeholder_shape[0], placeholder_shape[1], 3), dtype=np.uint8))
+            h, w = placeholder_shape
+            blank_arr = np.zeros((h, w, 3), dtype=np.uint8)
+            safe_case = case_id.replace("/", "_")
             for modality in modalities:
                 panels_by_modality[modality]["overlay_compare"] = [
-                    {"title": f"{modality.upper()}+GT[{compare_label}] z={z} (missing)", "png_b64": blank}
+                    {
+                        "title": f"{modality.upper()}+GT[{compare_label}] z={z} (missing)",
+                        "src": sink.write(blank_arr, f"{safe_case}/{compare_label}_{modality}_blank_z{z}"),
+                    }
                     for z in slice_idxs
                 ]
             row_compare_leak = "—"
@@ -272,7 +311,7 @@ def _render_case_row(
             for modality in modalities:
                 _, overlay_c = _modality_panels(
                     c_case_dir, modality, slice_idxs, c_prostate_full, c_lesion_full,
-                    compare_label, placeholder_shape,
+                    compare_label, placeholder_shape, sink, case_id,
                 )
                 panels_by_modality[modality]["overlay_compare"] = overlay_c
 
@@ -378,7 +417,7 @@ def _strip_row(label: str, panels: list[dict]) -> str:
     for p in panels:
         cells.append(
             f'<div class="panel">'
-            f'<img src="data:image/png;base64,{p["png_b64"]}" alt="{p["title"]}">'
+            f'<img src="{p["src"]}" alt="{p["title"]}" loading="lazy">'
             f'<div class="caption">{p["title"]}</div>'
             f'</div>'
         )
@@ -409,6 +448,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Number of z-slices to render per case (default: 5)")
     parser.add_argument("--modalities", type=str, default="t2,adc,calc",
                         help="Comma-separated modality directory names to render (default: t2,adc,calc)")
+    parser.add_argument("--external-assets", action="store_true",
+                        help="Write per-panel PNGs to a sidecar directory instead of base64-embedding "
+                             "them in the HTML. Recommended for large cohorts — the HTML stays small "
+                             "and lazy-loading lets the browser only decode thumbnails near the viewport.")
+    parser.add_argument("--asset-dir", type=Path, default=None,
+                        help="When --external-assets is set, where to write the PNGs. "
+                             "Default: <out>_assets/ next to the HTML.")
     args = parser.parse_args(argv)
 
     root: Path = args.root
@@ -430,10 +476,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --modalities must list at least one modality", file=sys.stderr)
         return 2
 
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.external_assets:
+        asset_dir = args.asset_dir or (args.out.parent / f"{args.out.stem}_assets")
+        sink = PngSink(embed=False, asset_dir=asset_dir, html_dir=args.out.parent)
+        print(f"[viz] writing PNGs to {asset_dir}", file=sys.stderr)
+    else:
+        sink = PngSink(embed=True, asset_dir=None, html_dir=args.out.parent)
+
     rows: list[dict] = []
     for cid in case_ids:
         try:
-            row = _render_case_row(cid, root, compare, n_strip=args.slices_per_case, modalities=modalities)
+            row = _render_case_row(cid, root, compare, n_strip=args.slices_per_case, modalities=modalities, sink=sink)
         except Exception as exc:
             print(f"[viz] skipped {cid}: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
