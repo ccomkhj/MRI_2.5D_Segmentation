@@ -23,6 +23,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -168,6 +169,52 @@ def _format_pct(x: float | None) -> str:
     return f"{x * 100:.1f}%"
 
 
+_SOURCE_DIR_NAMES = {"adc": "processed_ep2d_adc", "calc": "processed_ep2d_calc", "t2": "processed"}
+
+
+def _find_source_volume(
+    source_root: Path | None,
+    modality: str,
+    case_id: str,
+    series_uid: str | None,
+) -> np.ndarray | None:
+    """Locate the source modality PNG volume for a case.
+
+    Layout produced by ``tcia-handler/tools/preprocessing/dicom_converter.py``::
+
+        <source_root>/processed_ep2d_<modality>/<class>/<case>/<series_uid>/images/*.png
+
+    When ``series_uid`` is given (read from ``aligned_v?/<case>/mapping.json``),
+    we use it; otherwise we fall back to the first series directory present.
+    Returns None if the source isn't found (e.g. older v2 cases that pre-date
+    the mapping.json sidecar).
+    """
+    if source_root is None or modality not in _SOURCE_DIR_NAMES:
+        return None
+    base = source_root / _SOURCE_DIR_NAMES[modality] / case_id
+    if not base.is_dir():
+        return None
+    if series_uid:
+        candidate = base / series_uid / "images"
+        if candidate.is_dir():
+            return _load_volume(candidate)
+    # Fallback: first series subdir with an "images" child.
+    for sub in sorted(base.iterdir()):
+        images = sub / "images"
+        if images.is_dir():
+            return _load_volume(images)
+    return None
+
+
+def _resize_to(arr_2d: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    """Resize a 2D grayscale slice to ``target_hw`` (height, width) using NEAREST."""
+    if arr_2d.shape == target_hw:
+        return arr_2d
+    img = Image.fromarray(arr_2d.astype(np.uint8))
+    img = img.resize((target_hw[1], target_hw[0]), Image.NEAREST)
+    return np.array(img)
+
+
 def _gather_case_ids(root: Path) -> list[str]:
     """Discover case directories as 'class<n>/case_<id>' relative paths."""
     cases: list[str] = []
@@ -228,6 +275,7 @@ def _render_case_row(
     n_strip: int = 5,
     modalities: tuple[str, ...] = ("t2", "adc", "calc"),
     sink: PngSink | None = None,
+    source_root: Path | None = None,
 ) -> dict | None:
     """Build the per-case dict consumed by the HTML renderer.
 
@@ -315,6 +363,53 @@ def _render_case_row(
                 )
                 panels_by_modality[modality]["overlay_compare"] = overlay_c
 
+    # Optional source modality strip — shows the raw acquisition PNGs at INDEX
+    # k = T2 voxel idx (clamped to source slice count). If v2 is anatomically
+    # correct, source[k clamped] should match v2 row at the same k. v3, by
+    # contrast, takes the source PNGs and places each one at the spatially
+    # correct T2 voxel idx, so v3[k] should NOT match source[k clamped] for
+    # cases where the source has fewer slices than T2 (typical for ADC/CALC).
+    if source_root is not None:
+        mapping_json = root / case_id / "mapping.json"
+        compare_mapping_json = compare_root / case_id / "mapping.json" if compare_root is not None else None
+        series_uids: dict[str, str | None] = {m: None for m in modalities}
+        for src_mapping in (compare_mapping_json, mapping_json):
+            if src_mapping is None or not src_mapping.exists():
+                continue
+            try:
+                doc = json.loads(src_mapping.read_text())
+            except Exception:
+                continue
+            for m in modalities:
+                key = f"{m}_series_uid"
+                if series_uids[m] is None and key in doc:
+                    series_uids[m] = doc[key]
+            break
+
+        safe_case = case_id.replace("/", "_")
+        for modality in modalities:
+            src_vol = _find_source_volume(source_root, modality, case_id, series_uids[modality])
+            panels_source: list[dict] = []
+            if src_vol is None:
+                h, w = placeholder_shape
+                blank = sink.write(np.zeros((h, w, 3), dtype=np.uint8),
+                                   f"{safe_case}/source_{modality}_blank")
+                for z in slice_idxs:
+                    panels_source.append({
+                        "title": f"{modality.upper()} source[no-data]",
+                        "src": blank,
+                    })
+            else:
+                for z in slice_idxs:
+                    src_idx = min(z, src_vol.shape[0] - 1)
+                    arr = _resize_to(src_vol[src_idx], placeholder_shape)
+                    rgb = _t2_plain_rgb(arr)
+                    panels_source.append({
+                        "title": f"{modality.upper()} source[{src_idx}]",
+                        "src": sink.write(rgb, f"{safe_case}/source_{modality}_z{z}_src{src_idx}"),
+                    })
+            panels_by_modality[modality]["source_index_stacked"] = panels_source
+
     row = {
         "case_id": case_id,
         "slice_idxs": slice_idxs,
@@ -326,6 +421,7 @@ def _render_case_row(
         "leak_full": _format_pct(_leakage_ratio(prostate, lesion)),
         "modalities": list(modalities),
         "panels_by_modality": panels_by_modality,
+        "has_source": source_root is not None,
     }
     if compare_root is not None:
         row["compare_leak_full"] = row_compare_leak
@@ -395,7 +491,7 @@ def _render_case_block(r: dict, compare: bool, root_label: str, compare_label: s
         + "</div>"
     )
 
-    # One block per modality: plain → primary overlay → compare overlay (if any).
+    # One block per modality: plain → primary overlay → compare overlay (if any) → source.
     blocks: list[str] = []
     for modality in r["modalities"]:
         panels = r["panels_by_modality"][modality]
@@ -405,6 +501,9 @@ def _render_case_block(r: dict, compare: bool, root_label: str, compare_label: s
         sub_rows.append(_strip_row(f"{modality_label} + GT [{root_label}]", panels["overlay_primary"]))
         if compare and "overlay_compare" in panels:
             sub_rows.append(_strip_row(f"{modality_label} + GT [{compare_label}]", panels["overlay_compare"]))
+        if "source_index_stacked" in panels:
+            sub_rows.append(_strip_row(f"{modality_label} source[k] (raw acquisition)",
+                                       panels["source_index_stacked"]))
         blocks.append(f'<div class="modality-block">{"".join(sub_rows)}</div>')
 
     return f'<div class="case">{header}{"".join(blocks)}</div>'
@@ -455,6 +554,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset-dir", type=Path, default=None,
                         help="When --external-assets is set, where to write the PNGs. "
                              "Default: <out>_assets/ next to the HTML.")
+    parser.add_argument("--source-root", type=Path, default=None,
+                        help="Path to the tcia-handler data/ directory containing "
+                             "processed_ep2d_adc/, processed_ep2d_calc/, and processed/ subtrees. "
+                             "When set, adds a 4th 'source[k]' row per modality block showing the "
+                             "raw acquisition PNG at INDEX k (clamped). Lets you visually verify "
+                             "v2 = index-stacked source vs v3 = spatially-aligned source.")
     args = parser.parse_args(argv)
 
     root: Path = args.root
@@ -487,7 +592,13 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     for cid in case_ids:
         try:
-            row = _render_case_row(cid, root, compare, n_strip=args.slices_per_case, modalities=modalities, sink=sink)
+            row = _render_case_row(
+                cid, root, compare,
+                n_strip=args.slices_per_case,
+                modalities=modalities,
+                sink=sink,
+                source_root=args.source_root,
+            )
         except Exception as exc:
             print(f"[viz] skipped {cid}: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
