@@ -53,6 +53,10 @@ def resolve_run_dir(run_dir: Path) -> RunPaths:
             raise RunDirError(
                 f"No resolved_config.yaml or *_resolved_config.yaml in {run_dir}"
             )
+        if len(cfg_candidates) > 1:
+            raise RunDirError(
+                f"Multiple *_resolved_config.yaml files in {run_dir}: {[p.name for p in cfg_candidates]}"
+            )
         config = cfg_candidates[0]
 
     return RunPaths(run_dir=run_dir, checkpoint=checkpoint, resolved_config=config)
@@ -60,7 +64,7 @@ def resolve_run_dir(run_dir: Path) -> RunPaths:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Segmentation diagnostics for a finished run")
-    parser.add_argument("run_dir", type=Path, help="Path to the run directory (containing *_best.pt + resolved_config.yaml)")
+    parser.add_argument("run_dir", type=Path, help="Path to the run directory (containing *_best.pt + resolved_config.yaml or *_resolved_config.yaml)")
     parser.add_argument("--split", default="val", help="Split key (default: val)")
     parser.add_argument("--force", action="store_true", help="Re-run inference even if cached predictions exist")
     parser.add_argument("--include-low-priority", action="store_true", help="Include priority-3 audit cases in the report")
