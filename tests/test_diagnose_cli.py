@@ -106,7 +106,7 @@ def test_diagnose_main_end_to_end(tmp_path: Path) -> None:
 
     def fake_build(cfg, split):
         cases = {"case_00": 3, "case_01": 3}
-        return _stub_dataloader_factory(), cases, (8, 8)
+        return _stub_dataloader_factory(), cases
 
     with patch.object(diagnose, "_build_model_and_dataloader", fake_build), \
          patch.object(diagnose, "_load_checkpoint", lambda model, path, device: None), \
@@ -137,3 +137,5 @@ def test_diagnose_main_end_to_end(tmp_path: Path) -> None:
     html = (diag / "report.html").read_text(encoding="utf-8")
     assert "Diagnostic" in html
     assert "case_01" in html  # surfaced via audit queue (class_mask_inconsistent)
+    # No failures with the stub model.
+    assert "case(s) skipped" not in html
