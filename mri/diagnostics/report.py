@@ -12,7 +12,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from mri.diagnostics.attribute import CaseAttribution
+from mri.diagnostics.attribute import CaseAttribution, aggregate_by_class
 from mri.diagnostics.audit import AuditFinding
 
 
@@ -50,8 +50,8 @@ def _gray_to_rgb(arr: np.ndarray) -> np.ndarray:
 
 def _heatmap(prob: np.ndarray) -> np.ndarray:
     """Quick red-channel heatmap, no colormap dependency."""
-    base = _gray_to_rgb(np.zeros_like(prob, dtype=np.float32))
-    overlay = base.copy()
+    h, w = prob.shape
+    overlay = np.zeros((h, w, 3), dtype=np.uint8)
     overlay[..., 0] = (np.clip(prob, 0, 1) * 255).astype(np.uint8)
     return overlay
 
@@ -144,7 +144,6 @@ def render_report(
         "gland_dice": _format_metric(_safe_mean([c.gland_dice for c in case_attributions])),
     }
 
-    from mri.diagnostics.attribute import aggregate_by_class
     class_rows = aggregate_by_class(case_attributions)
     class_table = []
     for row in class_rows:
@@ -178,9 +177,27 @@ def render_report(
         })
         rendered_case_ids.append(case_id)
 
+    # Worst-cases-without-flags: bottom-decile Dice with no findings.
+    flagged_set = set(by_case_findings)
+    valid = [c for c in case_attributions if not (isinstance(c.dice, float) and math.isnan(c.dice))]
+    valid.sort(key=lambda c: c.dice)
+    if valid:
+        k = max(1, len(valid) // 10)
+        cutoff = valid[k - 1].dice
+        worst_unflagged_cases = [
+            c for c in valid if c.dice <= cutoff and c.case_id not in flagged_set
+        ][:5]
+    else:
+        worst_unflagged_cases = []
+
+    cases_to_render: list[str] = list(rendered_case_ids)
+    for c in worst_unflagged_cases:
+        if c.case_id not in cases_to_render:
+            cases_to_render.append(c.case_id)
+
     by_case_attrs = {c.case_id: c for c in case_attributions}
     cases = []
-    for case_id in rendered_case_ids:
+    for case_id in cases_to_render:
         attr = by_case_attrs.get(case_id)
         artifact = case_artifacts.get(case_id)
         if attr is None or artifact is None:
@@ -194,17 +211,6 @@ def render_report(
             "panels": _build_panels(artifact.pred_lesion_prob, artifact.gt_lesion, lesion_threshold),
         })
 
-    # Worst-cases-without-flags: bottom-decile Dice with no findings.
-    flagged_set = set(by_case_findings)
-    valid = [c for c in case_attributions if not (isinstance(c.dice, float) and math.isnan(c.dice))]
-    valid.sort(key=lambda c: c.dice)
-    if valid:
-        cutoff = valid[max(0, len(valid) // 10 - 1)].dice
-        worst_unflagged_cases = [
-            c for c in valid if c.dice <= cutoff and c.case_id not in flagged_set
-        ][:5]
-    else:
-        worst_unflagged_cases = []
     worst_unflagged = [
         {
             "case_id": c.case_id,
@@ -228,7 +234,7 @@ def render_report(
         cases=cases,
         worst_unflagged=worst_unflagged,
     )
-    output_path.write_text(rendered)
+    output_path.write_text(rendered, encoding="utf-8")
 
 
 def _safe_mean(values: Iterable[float]) -> float:
