@@ -19,7 +19,7 @@ python tools/generate_splits.py --metadata data/aligned_v2/metadata.json --outpu
 bash scripts/new/research-smoke --dry-run
 python tools/preprocessing/dicom_converter.py --all
 python tools/preprocessing/process_overlay_aligned.py
-python tools/validation/test_dataset_basic.py --manifest data/processed/class2/manifest.csv
+python tools/validation/validate_all_masks.py --class class2
 python tools/deployment/data_backup.py
 python tools/deployment/data_restore.py backup.zip
 ```

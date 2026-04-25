@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as html_lib
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
@@ -21,27 +22,42 @@ from mri.models import create_segmentation_model
 from mri.training.trainer import resolve_device
 
 
-_TCIA_HANDLER_ROOT = Path("/Users/huijokim/personal/tcia-handler")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+# Sibling-clone candidates, tried only if `import dicom_mapper` fails. The expected
+# layout is `<parent>/cancer_detector/` + `<parent>/dicom_mapper/`; `tcia-handler`
+# is kept for backwards-compat with the pre-rename local checkout.
+_DICOM_MAPPER_CANDIDATES = (
+    _REPO_ROOT.parent / "dicom_mapper",
+    _REPO_ROOT.parent / "tcia-handler",
+)
 
 
 def _import_dicom_mapper():
     try:
         import dicom_mapper  # noqa: F401
+        return
     except ImportError:
-        if _TCIA_HANDLER_ROOT.exists() and str(_TCIA_HANDLER_ROOT) not in sys.path:
-            sys.path.insert(0, str(_TCIA_HANDLER_ROOT))
-        try:
-            import dicom_mapper  # noqa: F401
-        except ImportError as exc:
-            raise ImportError(
-                f"dicom-mapper not importable. Install with: pip install -e {_TCIA_HANDLER_ROOT}"
-            ) from exc
+        pass
+    for root in _DICOM_MAPPER_CANDIDATES:
+        if root.exists() and str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+    try:
+        import dicom_mapper  # noqa: F401
+    except ImportError as exc:
+        hint = _DICOM_MAPPER_CANDIDATES[0]
+        raise ImportError(
+            "dicom_mapper not importable. Install it first, e.g.\n"
+            f"  git clone git@github.com:ccomkhj/dicom_mapper.git {hint}\n"
+            f"  uv pip install -e {hint}"
+        ) from exc
 
 
 def _import_metadata_helpers():
     _import_dicom_mapper()
-    tools_dir = _TCIA_HANDLER_ROOT / "tools"
-    if str(tools_dir) not in sys.path:
+    import dicom_mapper
+
+    tools_dir = Path(dicom_mapper.__file__).resolve().parent.parent / "tools"
+    if tools_dir.exists() and str(tools_dir) not in sys.path:
         sys.path.insert(0, str(tools_dir))
     import generate_training_metadata as gtm  # type: ignore
     return gtm
@@ -192,6 +208,7 @@ def run_dicom_segmentation(
     default_target_threshold: Optional[float] = None,
     threshold: Optional[float] = None,
     group_name: str = "case_auto",
+    open_browser: bool = False,
 ) -> Dict[str, Any]:
     """Run the full DICOM → segmentation → HTML report pipeline.
 
@@ -213,6 +230,7 @@ def run_dicom_segmentation(
     threshold : legacy single-threshold override. If provided, it is applied to both classes
         and the target sweep collapses to this one value (slider disabled).
     group_name : subdirectory name under staging/ used to scope the auto-preprocessed case.
+    open_browser : if True, open ``report.html`` in the default browser after inference.
     """
 
     zip_path = Path(zip_path)
@@ -289,6 +307,9 @@ def run_dicom_segmentation(
         source_zip=zip_path,
         checkpoint_path=ckpt["ckpt_file"],
     )
+
+    if open_browser:
+        webbrowser.open(Path(report_info["report_path"]).resolve().as_uri())
 
     return {
         "case_id": case_id,
@@ -500,6 +521,7 @@ def run_aligned_segmentation(
     target_thresholds: Optional[Sequence[float]] = None,
     default_target_threshold: Optional[float] = None,
     threshold: Optional[float] = None,
+    open_browser: bool = False,
 ) -> Dict[str, Any]:
     """Run segmentation inference + HTML report on a single aligned_v2 case.
 
@@ -579,6 +601,9 @@ def run_aligned_segmentation(
         default_target_threshold=default_target_threshold,
         checkpoint_path=ckpt["ckpt_file"],
     )
+
+    if open_browser:
+        webbrowser.open(Path(report_info["report_path"]).resolve().as_uri())
 
     return {
         "case_id": case_id,
