@@ -114,13 +114,41 @@ def _gt_overlay(gt_lesion: np.ndarray, t2: np.ndarray | None = None) -> np.ndarr
     return _alpha_blend(base, (0, 200, 255), alpha)
 
 
-def _pick_central_slice(gt_lesion: np.ndarray, pred_lesion_prob: np.ndarray) -> int:
-    """Pick the z-slice with the most GT lesion mass; fall back to predicted mass."""
+def _pick_central_slices(
+    gt_lesion: np.ndarray,
+    pred_lesion_prob: np.ndarray,
+    lesion_threshold: float,
+) -> list[int]:
+    """Pick anchor z-slices for the per-case grid.
+
+    Returns up to two anchors — one driven by GT mass, one by predicted mass —
+    so cases where the model fires in completely different z-positions than the
+    GT (a real failure mode) are still visible. Each anchor expands to ``a-1, a, a+1``;
+    the union is returned, sorted and deduped.
+    """
+    z_max_idx = pred_lesion_prob.shape[0] - 1
+    anchors: list[int] = []
+
     per_slice_gt = gt_lesion.reshape(gt_lesion.shape[0], -1).sum(axis=1)
     if per_slice_gt.max() > 0:
-        return int(np.argmax(per_slice_gt))
-    per_slice_pred = pred_lesion_prob.reshape(pred_lesion_prob.shape[0], -1).sum(axis=1)
-    return int(np.argmax(per_slice_pred))
+        anchors.append(int(np.argmax(per_slice_gt)))
+
+    pred_above = (pred_lesion_prob >= lesion_threshold).reshape(pred_lesion_prob.shape[0], -1).sum(axis=1)
+    if pred_above.max() > 0:
+        pred_anchor = int(np.argmax(pred_above))
+        if pred_anchor not in anchors:
+            anchors.append(pred_anchor)
+
+    if not anchors:
+        # Truly nothing — fall back to whichever channel has the most mass at all.
+        per_slice_pred_mass = pred_lesion_prob.reshape(pred_lesion_prob.shape[0], -1).sum(axis=1)
+        anchors.append(int(np.argmax(per_slice_pred_mass)))
+
+    expanded: set[int] = set()
+    for a in anchors:
+        for offset in (-1, 0, 1):
+            expanded.add(max(0, min(z_max_idx, a + offset)))
+    return sorted(expanded)
 
 
 def _build_panels(
@@ -131,9 +159,7 @@ def _build_panels(
     case_id: str | None = None,
     metadata_root: Path | None = None,
 ) -> list[dict]:
-    z_star = _pick_central_slice(gt_lesion, pred_lesion_prob)
-    z_max = pred_lesion_prob.shape[0] - 1
-    slice_idxs = sorted({max(0, z_star - 1), z_star, min(z_max, z_star + 1)})
+    slice_idxs = _pick_central_slices(gt_lesion, pred_lesion_prob, lesion_threshold)
     spatial = (pred_lesion_prob.shape[1], pred_lesion_prob.shape[2])
 
     panels = []
