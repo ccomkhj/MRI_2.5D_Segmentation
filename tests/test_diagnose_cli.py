@@ -39,3 +39,19 @@ def test_resolve_run_dir_missing_config(tmp_path: Path) -> None:
     (tmp_path / "model_best.pt").write_bytes(b"")
     with pytest.raises(RunDirError, match="resolved_config.yaml"):
         resolve_run_dir(tmp_path)
+
+
+def test_resolve_run_dir_multiple_checkpoints(tmp_path: Path) -> None:
+    (tmp_path / "a_best.pt").write_bytes(b"")
+    (tmp_path / "b_best.pt").write_bytes(b"")
+    (tmp_path / "resolved_config.yaml").write_text("")
+    with pytest.raises(RunDirError, match="Multiple .*_best\\.pt"):
+        resolve_run_dir(tmp_path)
+
+
+def test_resolve_run_dir_multiple_configs(tmp_path: Path) -> None:
+    (tmp_path / "model_best.pt").write_bytes(b"")
+    (tmp_path / "a_resolved_config.yaml").write_text("")
+    (tmp_path / "b_resolved_config.yaml").write_text("")
+    with pytest.raises(RunDirError, match="Multiple .*_resolved_config\\.yaml"):
+        resolve_run_dir(tmp_path)
