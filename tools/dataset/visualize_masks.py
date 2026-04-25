@@ -260,16 +260,18 @@ _HTML_HEADER = """<!DOCTYPE html>
 <h1>{title}</h1>
 <p class="meta">{subtitle}</p>
 <div class="legend">
-  Yellow = GT prostate mask · Cyan = GT lesion mask. <b>Strip</b>: {n_strip} z-slices spanning
-  the lesion z-range (or prostate z-range if no lesion). When comparing two roots, the
-  strip is picked from the union of both roots' lesion masks so cases where v2 vs v3
-  placed the mask at different z still show both. <b>Leakage</b> = fraction of lesion
-  voxels falling outside the prostate mask (anatomically should be 0).
+  Yellow = GT prostate mask · Cyan = GT lesion mask. <b>Each case has 3 rows of {n_strip} slices:</b>
+  row 1 = plain T2, row 2 = T2 with the GT mask from <code>--root</code>, row 3 = T2 with
+  the GT mask from <code>--compare-with</code> (when given). The row labels show the actual
+  dataset name in square brackets. The strip is picked from the union of both roots' lesion
+  masks so cases where the two converters placed the mask at different z still show both.
+  <b>Leakage</b> = fraction of lesion voxels falling outside the prostate mask (anatomically
+  should be 0); displayed per-root in the case header.
 </div>
 """
 
 
-def _render_case_block(r: dict, compare: bool) -> str:
+def _render_case_block(r: dict, compare: bool, root_label: str, compare_label: str | None) -> str:
     leak_class = ' class="leak-bad"' if r["leak_full"] not in ("—", "0.0%") else ""
 
     warnings: list[str] = []
@@ -285,8 +287,8 @@ def _render_case_block(r: dict, compare: bool) -> str:
         f'<div class="case-header">{r["case_id"]} · '
         f'slices {min(r["slice_idxs"])}–{max(r["slice_idxs"])}/{r["n_slices"]} · '
         f'lesion={r["lesion_voxels"]}vox · prostate={r["prostate_voxels"]}vox · '
-        f'leak<span{leak_class}>={r["leak_full"]}</span>'
-        + (f' · compare leak={r.get("compare_leak_full", "—")}' if compare else "")
+        f'leak[{root_label}]<span{leak_class}>={r["leak_full"]}</span>'
+        + (f' · leak[{compare_label}]={r.get("compare_leak_full", "—")}' if compare else "")
         + warnings_html
         + "</div>"
     )
@@ -298,9 +300,9 @@ def _render_case_block(r: dict, compare: bool) -> str:
 
     rows_html: list[str] = []
     rows_html.append(_strip_row("T2", t2_panels))
-    rows_html.append(_strip_row("T2 + GT", overlay_panels))
+    rows_html.append(_strip_row(f"T2 + GT [{root_label}]", overlay_panels))
     if compare and "compare_panels" in r:
-        rows_html.append(_strip_row("T2 + GT (compare)", r["compare_panels"]))
+        rows_html.append(_strip_row(f"T2 + GT [{compare_label}]", r["compare_panels"]))
 
     return f'<div class="case">{header}{"".join(rows_html)}</div>'
 
@@ -319,9 +321,17 @@ def _strip_row(label: str, panels: list[dict]) -> str:
     return f'<div class="strip-row">{"".join(cells)}</div>'
 
 
-def _render_html(rows: list[dict], title: str, subtitle: str, compare: bool, n_strip: int) -> str:
+def _render_html(
+    rows: list[dict],
+    title: str,
+    subtitle: str,
+    compare: bool,
+    n_strip: int,
+    root_label: str,
+    compare_label: str | None,
+) -> str:
     head = _HTML_HEADER.format(title=title, subtitle=subtitle, n_strip=n_strip)
-    blocks = [_render_case_block(r, compare) for r in rows]
+    blocks = [_render_case_block(r, compare, root_label, compare_label) for r in rows]
     return head + "\n".join(blocks) + "</body></html>"
 
 
@@ -359,11 +369,18 @@ def main(argv: list[str] | None = None) -> int:
         if row is not None:
             rows.append(row)
 
-    title = f"GT mask viewer: {root.name}" + (f" vs {compare.name}" if compare else "")
-    subtitle = f"Root: {root}" + (f" · Compare: {compare}" if compare else "") + f" · Cases rendered: {len(rows)}"
+    root_label = root.name
+    compare_label = compare.name if compare is not None else None
+    title = f"GT mask viewer: {root_label}" + (f" vs {compare_label}" if compare_label else "")
+    subtitle = (
+        f"Row 2 = {root_label} ({root})"
+        + (f" · Row 3 = {compare_label} ({compare})" if compare_label else "")
+        + f" · Cases rendered: {len(rows)}"
+    )
     html = _render_html(
         rows, title=title, subtitle=subtitle,
         compare=compare is not None, n_strip=args.slices_per_case,
+        root_label=root_label, compare_label=compare_label,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
