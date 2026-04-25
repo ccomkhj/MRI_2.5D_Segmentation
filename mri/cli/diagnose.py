@@ -244,6 +244,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_audit_csv(findings, diag_root / "label_audit.csv")
 
     template_path = Path(__file__).resolve().parents[1] / "diagnostics" / "templates" / "diagnostic_report.html.j2"
+    metadata_path_cfg = cfg.get("data", {}).get("metadata")
+    metadata_root = Path(metadata_path_cfg).parent if metadata_path_cfg else None
     render_report(
         output_path=diag_root / "report.html",
         template_path=template_path,
@@ -255,6 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         audit_findings=findings,
         case_artifacts=artifacts,
         include_low_priority=args.include_low_priority,
+        metadata_root=metadata_root,
     )
     print(f"[diagnose] report: {diag_root / 'report.html'}")
     return 0

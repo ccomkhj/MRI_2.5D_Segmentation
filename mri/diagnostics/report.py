@@ -48,29 +48,70 @@ def _gray_to_rgb(arr: np.ndarray) -> np.ndarray:
     return np.stack([arr, arr, arr], axis=-1)
 
 
-def _heatmap(prob: np.ndarray) -> np.ndarray:
-    """Quick red-channel heatmap, no colormap dependency."""
-    h, w = prob.shape
-    overlay = np.zeros((h, w, 3), dtype=np.uint8)
-    overlay[..., 0] = (np.clip(prob, 0, 1) * 255).astype(np.uint8)
-    return overlay
+def _load_t2_slice(metadata_root: Path, case_id: str, slice_idx: int, shape: tuple[int, int]) -> np.ndarray | None:
+    """Load a single T2 slice as a uint8 grayscale array sized to ``shape``.
+
+    Returns None when the file is missing — callers should fall back to a black background.
+    Mirrors ``mri/inference/segmentation.py:_load_case_t2_slice`` so we render the same
+    image the model saw at inference time.
+    """
+    image_path = metadata_root / case_id / "t2" / f"{slice_idx:04d}.png"
+    if not image_path.exists():
+        return None
+    from PIL import Image
+
+    image = Image.open(image_path).convert("L")
+    if image.size != (shape[1], shape[0]):
+        image = image.resize((shape[1], shape[0]), Image.BILINEAR)
+    return np.array(image, dtype=np.uint8)
 
 
-def _disagreement_panel(pred_bin: np.ndarray, gt_bin: np.ndarray) -> np.ndarray:
-    """TP=green, FP=red, FN=blue, on black background."""
-    h, w = pred_bin.shape
-    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+def _base_rgb(t2: np.ndarray | None, shape: tuple[int, int]) -> np.ndarray:
+    """Build the H,W,3 base image for a panel — T2 grayscale if available, else black."""
+    if t2 is None:
+        return np.zeros((shape[0], shape[1], 3), dtype=np.uint8)
+    return np.stack([t2, t2, t2], axis=-1).astype(np.uint8)
+
+
+def _alpha_blend(base: np.ndarray, color: tuple[int, int, int], alpha: np.ndarray) -> np.ndarray:
+    """Alpha-blend a single color over a base image. ``alpha`` is H,W in [0, 1]."""
+    a = np.clip(alpha, 0.0, 1.0)[..., None]
+    color_arr = np.array(color, dtype=np.float32).reshape(1, 1, 3)
+    out = (1.0 - a) * base.astype(np.float32) + a * color_arr
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _heatmap(prob: np.ndarray, t2: np.ndarray | None = None) -> np.ndarray:
+    """Red probability heatmap, optionally alpha-blended over a T2 grayscale base."""
+    base = _base_rgb(t2, prob.shape)
+    # Slightly compressed alpha so even mid-confidence regions are visible.
+    alpha = np.clip(prob, 0.0, 1.0) * 0.85
+    return _alpha_blend(base, (255, 0, 0), alpha)
+
+
+def _disagreement_panel(
+    pred_bin: np.ndarray, gt_bin: np.ndarray, t2: np.ndarray | None = None,
+) -> np.ndarray:
+    """TP=green, FP=red, FN=cyan, alpha-blended over a T2 grayscale base."""
+    base = _base_rgb(t2, pred_bin.shape)
+    out = base.copy()
     tp = np.logical_and(pred_bin, gt_bin)
     fp = np.logical_and(pred_bin, np.logical_not(gt_bin))
     fn = np.logical_and(np.logical_not(pred_bin), gt_bin)
-    rgb[tp] = (0, 200, 0)
-    rgb[fp] = (220, 0, 0)
-    rgb[fn] = (0, 100, 220)
-    return rgb
+    if tp.any():
+        out = _alpha_blend(out, (0, 200, 0), tp.astype(np.float32) * 0.6)
+    if fp.any():
+        out = _alpha_blend(out, (220, 0, 0), fp.astype(np.float32) * 0.6)
+    if fn.any():
+        out = _alpha_blend(out, (0, 180, 220), fn.astype(np.float32) * 0.6)
+    return out
 
 
-def _gt_overlay(gt_lesion: np.ndarray) -> np.ndarray:
-    return _heatmap(gt_lesion.astype(np.float32))
+def _gt_overlay(gt_lesion: np.ndarray, t2: np.ndarray | None = None) -> np.ndarray:
+    """GT lesion shown as a cyan tint over a T2 grayscale base (matches html_report.py convention)."""
+    base = _base_rgb(t2, gt_lesion.shape)
+    alpha = (gt_lesion.astype(bool).astype(np.float32)) * 0.6
+    return _alpha_blend(base, (0, 200, 255), alpha)
 
 
 def _pick_central_slice(gt_lesion: np.ndarray, pred_lesion_prob: np.ndarray) -> int:
@@ -83,19 +124,29 @@ def _pick_central_slice(gt_lesion: np.ndarray, pred_lesion_prob: np.ndarray) -> 
 
 
 def _build_panels(
-    pred_lesion_prob: np.ndarray, gt_lesion: np.ndarray, lesion_threshold: float,
+    pred_lesion_prob: np.ndarray,
+    gt_lesion: np.ndarray,
+    lesion_threshold: float,
+    *,
+    case_id: str | None = None,
+    metadata_root: Path | None = None,
 ) -> list[dict]:
     z_star = _pick_central_slice(gt_lesion, pred_lesion_prob)
     z_max = pred_lesion_prob.shape[0] - 1
     slice_idxs = sorted({max(0, z_star - 1), z_star, min(z_max, z_star + 1)})
+    spatial = (pred_lesion_prob.shape[1], pred_lesion_prob.shape[2])
 
     panels = []
     for z in slice_idxs:
-        gt_panel = _gt_overlay(gt_lesion[z])
-        prob_panel = _heatmap(pred_lesion_prob[z])
+        t2 = None
+        if metadata_root is not None and case_id is not None:
+            t2 = _load_t2_slice(metadata_root, case_id, z, spatial)
+        gt_panel = _gt_overlay(gt_lesion[z], t2)
+        prob_panel = _heatmap(pred_lesion_prob[z], t2)
         disagreement = _disagreement_panel(
             pred_lesion_prob[z] >= lesion_threshold,
             gt_lesion[z].astype(bool),
+            t2,
         )
         for title, panel in (("GT", gt_panel), ("pred prob", prob_panel), ("disagreement", disagreement)):
             panels.append({
@@ -126,6 +177,7 @@ def render_report(
     audit_findings: Sequence[AuditFinding],
     case_artifacts: dict[str, CaseArtifact],
     include_low_priority: bool = False,
+    metadata_root: Path | None = None,
 ) -> None:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -208,7 +260,13 @@ def render_report(
             "dice": _format_metric(attr.dice),
             "fp_outside_ratio": _format_metric(attr.fp_outside_ratio),
             "flag_list": [f.flag for f in by_case_findings.get(case_id, [])],
-            "panels": _build_panels(artifact.pred_lesion_prob, artifact.gt_lesion, lesion_threshold),
+            "panels": _build_panels(
+                artifact.pred_lesion_prob,
+                artifact.gt_lesion,
+                lesion_threshold,
+                case_id=case_id,
+                metadata_root=metadata_root,
+            ),
         })
 
     worst_unflagged = [
