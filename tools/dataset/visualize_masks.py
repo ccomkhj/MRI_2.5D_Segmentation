@@ -146,13 +146,61 @@ def _gather_case_ids(root: Path) -> list[str]:
     return cases
 
 
+def _modality_panels(
+    case_dir: Path,
+    modality: str,
+    slice_idxs: list[int],
+    prostate: np.ndarray,
+    lesion: np.ndarray,
+    label: str,
+    placeholder_shape: tuple[int, int],
+) -> tuple[list[dict], list[dict]]:
+    """Return (plain_panels, overlay_panels) for one modality at the given slices.
+
+    The overlays use ``prostate`` and ``lesion`` (already in the modality's grid because
+    mapping.py resampled ADC and CALC onto the T2 grid). Falls back to a blank panel set
+    when the modality directory is missing on disk.
+    """
+    vol = _load_volume(case_dir / modality)
+    plain: list[dict] = []
+    overlay: list[dict] = []
+    if vol is None:
+        # Modality dir absent — emit blank placeholders so layout stays consistent.
+        h, w = placeholder_shape
+        blank = _png_b64_from_array(np.zeros((h, w, 3), dtype=np.uint8))
+        for z in slice_idxs:
+            plain.append({"title": f"{modality.upper()} z={z} (missing)", "png_b64": blank})
+            overlay.append({"title": f"{modality.upper()}+GT[{label}] z={z} (missing)", "png_b64": blank})
+        return plain, overlay
+    for z in slice_idxs:
+        cz = min(z, vol.shape[0] - 1)
+        plain.append({"title": f"{modality.upper()} z={cz}", "png_b64": _t2_plain_png(vol[cz])})
+        # Mask volumes are at T2 grid; ADC/CALC have been resampled to T2 so cz is the same z.
+        # If shapes happen to differ for some pathological case, fall back to plain.
+        if prostate.shape == vol.shape and lesion.shape == vol.shape:
+            overlay.append({
+                "title": f"{modality.upper()}+GT[{label}] z={cz}",
+                "png_b64": _t2_with_mask_png(vol[cz], prostate[cz], lesion[cz]),
+            })
+        else:
+            overlay.append({
+                "title": f"{modality.upper()}+GT[{label}] z={cz} (shape mismatch)",
+                "png_b64": _t2_plain_png(vol[cz]),
+            })
+    return plain, overlay
+
+
 def _render_case_row(
     case_id: str,
     root: Path,
     compare_root: Path | None,
     n_strip: int = 5,
+    modalities: tuple[str, ...] = ("t2", "adc", "calc"),
 ) -> dict | None:
-    """Render one row for the HTML; returns None if the case has no T2 at all."""
+    """Build the per-case dict consumed by the HTML renderer.
+
+    Returns None when the primary root has no T2 directory for this case.
+    """
     case_dir = root / case_id
     t2 = _load_volume(case_dir / "t2")
     if t2 is None:
@@ -167,29 +215,66 @@ def _render_case_row(
     if lesion is None:
         lesion = np.zeros_like(t2, dtype=np.uint8)
 
-    # If we're comparing, pick the strip from the union of lesion masks across
-    # both roots so the row covers v2's lesion z AND v3's lesion z.
+    # Strip picker uses the union of v2 and v3 lesion masks so cases where the two
+    # converters placed the mask at different z still show both.
     strip_lesion = lesion.copy()
     strip_prostate = prostate.copy()
+    compare_prostate = compare_lesion = None
     if compare_root is not None:
         c_les = _load_volume(compare_root / case_id / "mask_target1")
         c_pro = _load_volume(compare_root / case_id / "mask_prostate")
         if c_les is not None and c_les.shape == lesion.shape:
             strip_lesion = np.maximum(strip_lesion, c_les)
+            compare_lesion = c_les
         if c_pro is not None and c_pro.shape == prostate.shape:
             strip_prostate = np.maximum(strip_prostate, c_pro)
+            compare_prostate = c_pro
 
     slice_idxs = _pick_slice_strip(strip_lesion, strip_prostate, t2.shape[0], n_strip)
-    leak_full = _leakage_ratio(prostate, lesion)
+    placeholder_shape = (t2.shape[1], t2.shape[2])
 
-    panels = []
-    for z in slice_idxs:
-        panels.append({"title": f"T2 z={z}", "png_b64": _t2_plain_png(t2[z]), "kind": "t2"})
-        panels.append({
-            "title": f"T2+GT z={z}",
-            "png_b64": _t2_with_mask_png(t2[z], prostate[z], lesion[z]),
-            "kind": "overlay",
-        })
+    # Build per-modality panel sets for the primary root and (optionally) the compare root.
+    primary_label = root.name
+    panels_by_modality: dict[str, dict] = {}
+    for modality in modalities:
+        plain, overlay = _modality_panels(
+            case_dir, modality, slice_idxs, prostate, lesion, primary_label, placeholder_shape,
+        )
+        panels_by_modality[modality] = {"plain": plain, "overlay_primary": overlay}
+
+    if compare_root is not None:
+        compare_label = compare_root.name
+        c_case_dir = compare_root / case_id
+        c_prostate_full = compare_prostate
+        c_lesion_full = compare_lesion
+        # If compare root masks didn't match the primary T2 shape, fall back to whatever
+        # is on disk for that root (its own T2 shape).
+        if c_prostate_full is None:
+            c_prostate_full = _load_volume(c_case_dir / "mask_prostate")
+        if c_lesion_full is None:
+            c_lesion_full = _load_volume(c_case_dir / "mask_target1")
+        c_t2 = _load_volume(c_case_dir / "t2")
+        if c_t2 is None:
+            # Compare root has no T2 for this case — emit blanks for every modality.
+            blank = _png_b64_from_array(np.zeros((placeholder_shape[0], placeholder_shape[1], 3), dtype=np.uint8))
+            for modality in modalities:
+                panels_by_modality[modality]["overlay_compare"] = [
+                    {"title": f"{modality.upper()}+GT[{compare_label}] z={z} (missing)", "png_b64": blank}
+                    for z in slice_idxs
+                ]
+            row_compare_leak = "—"
+        else:
+            if c_prostate_full is None:
+                c_prostate_full = np.zeros_like(c_t2, dtype=np.uint8)
+            if c_lesion_full is None:
+                c_lesion_full = np.zeros_like(c_t2, dtype=np.uint8)
+            row_compare_leak = _format_pct(_leakage_ratio(c_prostate_full, c_lesion_full))
+            for modality in modalities:
+                _, overlay_c = _modality_panels(
+                    c_case_dir, modality, slice_idxs, c_prostate_full, c_lesion_full,
+                    compare_label, placeholder_shape,
+                )
+                panels_by_modality[modality]["overlay_compare"] = overlay_c
 
     row = {
         "case_id": case_id,
@@ -199,38 +284,12 @@ def _render_case_row(
         "prostate_voxels": int((prostate > 127).sum()),
         "has_prostate_dir": has_prostate_dir,
         "has_lesion_dir": has_lesion_dir,
-        "leak_full": _format_pct(leak_full),
-        "panels": panels,
+        "leak_full": _format_pct(_leakage_ratio(prostate, lesion)),
+        "modalities": list(modalities),
+        "panels_by_modality": panels_by_modality,
     }
-
     if compare_root is not None:
-        compare_dir = compare_root / case_id
-        c_t2 = _load_volume(compare_dir / "t2")
-        c_prostate = _load_volume(compare_dir / "mask_prostate")
-        c_lesion = _load_volume(compare_dir / "mask_target1")
-        if c_t2 is None:
-            row["compare_leak_full"] = "—"
-            row["compare_panels"] = [
-                {"title": "compare: missing", "png_b64": _png_b64_from_array(np.zeros((t2.shape[1], t2.shape[2], 3), dtype=np.uint8))}
-                for _ in slice_idxs
-            ]
-        else:
-            if c_prostate is None:
-                c_prostate = np.zeros_like(c_t2, dtype=np.uint8)
-            if c_lesion is None:
-                c_lesion = np.zeros_like(c_t2, dtype=np.uint8)
-            row["compare_leak_full"] = _format_pct(_leakage_ratio(c_prostate, c_lesion))
-            row["compare_panels"] = [
-                {
-                    "title": f"compare T2+GT z={min(z, c_t2.shape[0] - 1)}",
-                    "png_b64": _t2_with_mask_png(
-                        c_t2[min(z, c_t2.shape[0] - 1)],
-                        c_prostate[min(z, c_t2.shape[0] - 1)],
-                        c_lesion[min(z, c_t2.shape[0] - 1)],
-                    ),
-                }
-                for z in slice_idxs
-            ]
+        row["compare_leak_full"] = row_compare_leak
     return row
 
 
@@ -246,6 +305,8 @@ _HTML_HEADER = """<!DOCTYPE html>
   .case {{ border: 1px solid #ddd; border-radius: 4px; padding: 0.6rem 0.8rem; margin-bottom: 1.2rem; }}
   .case-header {{ font-family: monospace; font-size: 0.95rem; margin-bottom: 0.4rem; }}
   .case-stats {{ color: #555; font-size: 0.85rem; margin-bottom: 0.4rem; }}
+  .modality-block {{ margin-bottom: 0.6rem; padding-bottom: 0.4rem; border-bottom: 1px dashed #eee; }}
+  .modality-block:last-child {{ border-bottom: 0; padding-bottom: 0; }}
   .strip-row {{ display: flex; gap: 0.3rem; margin-bottom: 0.3rem; align-items: flex-start; }}
   .strip-label {{ font-size: 0.8rem; color: #555; min-width: 6rem; padding-top: 0.5rem; font-family: monospace; }}
   .strip-row img {{ width: 200px; display: block; }}
@@ -260,13 +321,15 @@ _HTML_HEADER = """<!DOCTYPE html>
 <h1>{title}</h1>
 <p class="meta">{subtitle}</p>
 <div class="legend">
-  Yellow = GT prostate mask · Cyan = GT lesion mask. <b>Each case has 3 rows of {n_strip} slices:</b>
-  row 1 = plain T2, row 2 = T2 with the GT mask from <code>--root</code>, row 3 = T2 with
-  the GT mask from <code>--compare-with</code> (when given). The row labels show the actual
-  dataset name in square brackets. The strip is picked from the union of both roots' lesion
-  masks so cases where the two converters placed the mask at different z still show both.
-  <b>Leakage</b> = fraction of lesion voxels falling outside the prostate mask (anatomically
-  should be 0); displayed per-root in the case header.
+  Yellow = GT prostate mask · Cyan = GT lesion mask. <b>Each modality (T2, ADC, CALC) gets
+  a 3-row block of {n_strip} slices:</b> plain modality, then modality + GT from
+  <code>--root</code>, then modality + GT from <code>--compare-with</code> (when given).
+  Row labels show the dataset name in square brackets, e.g. <code>T2 + GT [aligned_v3]</code>.
+  Slice indices are shared across modalities since ADC/CALC are resampled onto the T2 grid by
+  the alignment step. The strip is picked from the union of both roots' lesion masks so cases
+  where the two converters placed the mask at different z still show both. <b>Leakage</b> =
+  fraction of lesion voxels falling outside the prostate mask (anatomically should be 0);
+  displayed per-root in the case header.
 </div>
 """
 
@@ -293,18 +356,19 @@ def _render_case_block(r: dict, compare: bool, root_label: str, compare_label: s
         + "</div>"
     )
 
-    # Group panels into rows: row 1 = T2 plain, row 2 = T2+GT primary, row 3 = T2+GT compare (if any).
-    n_strip = len(r["slice_idxs"])
-    t2_panels = [r["panels"][i * 2] for i in range(n_strip)]
-    overlay_panels = [r["panels"][i * 2 + 1] for i in range(n_strip)]
+    # One block per modality: plain → primary overlay → compare overlay (if any).
+    blocks: list[str] = []
+    for modality in r["modalities"]:
+        panels = r["panels_by_modality"][modality]
+        modality_label = modality.upper()
+        sub_rows: list[str] = []
+        sub_rows.append(_strip_row(modality_label, panels["plain"]))
+        sub_rows.append(_strip_row(f"{modality_label} + GT [{root_label}]", panels["overlay_primary"]))
+        if compare and "overlay_compare" in panels:
+            sub_rows.append(_strip_row(f"{modality_label} + GT [{compare_label}]", panels["overlay_compare"]))
+        blocks.append(f'<div class="modality-block">{"".join(sub_rows)}</div>')
 
-    rows_html: list[str] = []
-    rows_html.append(_strip_row("T2", t2_panels))
-    rows_html.append(_strip_row(f"T2 + GT [{root_label}]", overlay_panels))
-    if compare and "compare_panels" in r:
-        rows_html.append(_strip_row(f"T2 + GT [{compare_label}]", r["compare_panels"]))
-
-    return f'<div class="case">{header}{"".join(rows_html)}</div>'
+    return f'<div class="case">{header}{"".join(blocks)}</div>'
 
 
 def _strip_row(label: str, panels: list[dict]) -> str:
@@ -343,6 +407,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="Limit to N cases (0 = all)")
     parser.add_argument("--slices-per-case", type=int, default=5,
                         help="Number of z-slices to render per case (default: 5)")
+    parser.add_argument("--modalities", type=str, default="t2,adc,calc",
+                        help="Comma-separated modality directory names to render (default: t2,adc,calc)")
     args = parser.parse_args(argv)
 
     root: Path = args.root
@@ -359,10 +425,15 @@ def main(argv: list[str] | None = None) -> int:
         case_ids = case_ids[: args.limit]
     print(f"[viz] {len(case_ids)} cases under {root}", file=sys.stderr)
 
+    modalities = tuple(m.strip() for m in args.modalities.split(",") if m.strip())
+    if not modalities:
+        print(f"error: --modalities must list at least one modality", file=sys.stderr)
+        return 2
+
     rows: list[dict] = []
     for cid in case_ids:
         try:
-            row = _render_case_row(cid, root, compare, n_strip=args.slices_per_case)
+            row = _render_case_row(cid, root, compare, n_strip=args.slices_per_case, modalities=modalities)
         except Exception as exc:
             print(f"[viz] skipped {cid}: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
