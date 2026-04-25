@@ -25,6 +25,7 @@ The root [README.md](../README.md) is the project overview. Use the guides below
 - [dicom_wrapper.md](dicom_wrapper.md): one-call wrapper that takes a vendor DICOM zip and emits segmentation outputs + a self-contained HTML report
 - [sweeps.md](sweeps.md): segmentation sweeps and downstream top-1 promotion
 - [research.md](research.md): end-to-end local research workflow with generated configs and manifests
+- [autoresearch.md](autoresearch.md): project-local Codex skill for bounded autonomous experiment loops
 - [smoke.md](smoke.md): small CPU smoke workflows for 3-case and 5-case validation
 - [paper_run_checklist.md](paper_run_checklist.md): checklist for real non-smoke research runs
 - [current_leader.md](current_leader.md): point-in-time snapshot of the best segmentation run (refresh after each sweep)

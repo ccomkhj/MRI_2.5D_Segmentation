@@ -43,7 +43,7 @@ Create a `.env` file at the repo root. The HPC scripts (`scripts/new/*`) source 
 # .env  (do NOT commit this file)
 
 # Singularity container (set to run inside container on HPC)
-SIF_IMAGE=/p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif
+MRI_TRAIN_CONTAINER_IMAGE=/p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif
 # SIF_EXTRA_BINDS=/extra/path:/extra/path   # additional bind mounts if needed
 
 # Required for research-smoke and import_tcia_aligned.py
@@ -61,15 +61,34 @@ WANDB_API_KEY=<your-key>       # only needed if WANDB_MODE=online
 
 **Singularity container (recommended):**
 
-The scripts run inside a Singularity container when `SIF_IMAGE` is set. Add it to `.env`:
+The scripts run inside a Singularity container when `MRI_TRAIN_CONTAINER_IMAGE` is set. Add it to `.env`:
 
 ```bash
-SIF_IMAGE=/p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif
+MRI_TRAIN_CONTAINER_IMAGE=/p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif
 ```
 
-To rebuild the image (run on a login node):
+The image contents come from the repo [Dockerfile](/p/scratch/ebrains-0000006/kim27/cancer_detector/Dockerfile:1), which installs [requirements.txt](/p/scratch/ebrains-0000006/kim27/cancer_detector/requirements.txt:1). Rebuild it after dependency changes such as adding `einops`.
+
+One reliable path is:
+
+1. Build a Docker image from the repo on a machine where Docker is available:
 ```bash
-singularity build singularity_images/mri-train.sif archive/scripts/singularity.def
+docker build -t cancer-detector:mri-train3 .
+docker save cancer-detector:mri-train3 -o /tmp/cancer-detector-mri-train3.tar
+```
+
+2. Convert that archive into the cluster `.sif` image:
+```bash
+apptainer build /p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif \
+  docker-archive:///tmp/cancer-detector-mri-train3.tar
+```
+
+If your site requires privileged image builds, use `apptainer build --fakeroot ...` or build the `.sif` wherever your Apptainer/Singularity setup allows it.
+
+Quick verification:
+```bash
+apptainer exec /p/scratch/ebrains-0000006/<user>/singularity_images/mri-train3.sif \
+  python -c "import monai, einops; print(monai.__version__)"
 ```
 
 **Native Python (alternative):**
