@@ -142,17 +142,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--split", default="val", help="Split key (default: val)")
     parser.add_argument("--force", action="store_true", help="Re-run inference even if cached predictions exist")
     parser.add_argument("--include-low-priority", action="store_true", help="Include priority-3 audit cases in the report")
-    parser.add_argument("--device", default="cpu", help="torch device (default: cpu)")
+    parser.add_argument("--device", default="cpu", help="torch device — 'cpu', 'cuda', 'mps', or 'auto' (default: cpu)")
     args = parser.parse_args(argv)
 
     paths = resolve_run_dir(args.run_dir)
     print(f"[diagnose] checkpoint: {paths.checkpoint}")
     print(f"[diagnose] resolved_config: {paths.resolved_config}")
 
+    from mri.training.trainer import resolve_device
     cfg = yaml.safe_load(paths.resolved_config.read_text()) or {}
-    device = torch.device(args.device)
+    device = resolve_device(args.device)
     lesion_threshold = _resolve_lesion_threshold(cfg)
-    gland_threshold = lesion_threshold  # same operating point unless future spec splits them
+    gland_threshold = lesion_threshold
 
     diag_root = paths.run_dir / "diagnostic"
     predictions_dir = diag_root / "predictions"
@@ -184,16 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         case_dir = predictions_dir / case_id
         if not (case_dir / "prob.npz").exists():
             if case_id in failed_case_ids:
-                case_attrs.append(CaseAttribution(
-                    case_id=case_id, class_label=0,
-                    dice=float("nan"), precision=float("nan"), recall=float("nan"),
-                    fp_voxels_inside_gland=0, fp_voxels_outside_gland=0,
-                    fn_voxels=0, tp_voxels=0,
-                    fp_outside_ratio=float("nan"),
-                    gland_dice=float("nan"),
-                    lesion_volume_gt_voxels=0,
-                    status="failed",
-                ))
+                case_attrs.append(CaseAttribution.failed(case_id))
             continue
         try:
             gland_prob, lesion_prob, gland_gt, lesion_gt, class_label = _load_per_case_artifact(predictions_dir, case_id)
@@ -222,16 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"[diagnose] skipped {case_id}: {type(exc).__name__}: {exc}",
                 stacklevel=2,
             )
-            case_attrs.append(CaseAttribution(
-                case_id=case_id, class_label=0,
-                dice=float("nan"), precision=float("nan"), recall=float("nan"),
-                fp_voxels_inside_gland=0, fp_voxels_outside_gland=0,
-                fn_voxels=0, tp_voxels=0,
-                fp_outside_ratio=float("nan"),
-                gland_dice=float("nan"),
-                lesion_volume_gt_voxels=0,
-                status="failed",
-            ))
+            case_attrs.append(CaseAttribution.failed(case_id))
             continue
         case_attrs.append(attr)
         findings.extend(case_findings)

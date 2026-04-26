@@ -237,9 +237,16 @@ def _modality_panels(
     placeholder_shape: tuple[int, int],
     sink: PngSink,
     case_id: str,
+    vol: np.ndarray | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """Return (plain_panels, overlay_panels) for one modality at the given slices."""
-    vol = _load_volume(case_dir / modality)
+    """Return (plain_panels, overlay_panels) for one modality at the given slices.
+
+    ``vol`` is the modality volume; if not supplied, it is loaded from disk.
+    Callers that have already loaded the volume (e.g. T2 in ``_render_case_row``)
+    should pass it to avoid a redundant decode.
+    """
+    if vol is None:
+        vol = _load_volume(case_dir / modality)
     plain: list[dict] = []
     overlay: list[dict] = []
     safe_case = case_id.replace("/", "_")
@@ -318,24 +325,19 @@ def _render_case_row(
         sink = PngSink(embed=True, asset_dir=None, html_dir=Path.cwd())
 
     # Build per-modality panel sets for the primary root and (optionally) the compare root.
+    # Pass the already-loaded T2 volume to skip a redundant decode in _modality_panels.
     primary_label = root.name
     panels_by_modality: dict[str, dict] = {}
     for modality in modalities:
         plain, overlay = _modality_panels(
             case_dir, modality, slice_idxs, prostate, lesion, primary_label, placeholder_shape,
-            sink, case_id,
+            sink, case_id, vol=t2 if modality == "t2" else None,
         )
         panels_by_modality[modality] = {"plain": plain, "overlay_primary": overlay}
 
     if compare_root is not None:
         compare_label = compare_root.name
         c_case_dir = compare_root / case_id
-        c_prostate_full = compare_prostate
-        c_lesion_full = compare_lesion
-        if c_prostate_full is None:
-            c_prostate_full = _load_volume(c_case_dir / "mask_prostate")
-        if c_lesion_full is None:
-            c_lesion_full = _load_volume(c_case_dir / "mask_target1")
         c_t2 = _load_volume(c_case_dir / "t2")
         if c_t2 is None:
             h, w = placeholder_shape
@@ -351,6 +353,8 @@ def _render_case_row(
                 ]
             row_compare_leak = "—"
         else:
+            c_prostate_full = compare_prostate if compare_prostate is not None else _load_volume(c_case_dir / "mask_prostate")
+            c_lesion_full = compare_lesion if compare_lesion is not None else _load_volume(c_case_dir / "mask_target1")
             if c_prostate_full is None:
                 c_prostate_full = np.zeros_like(c_t2, dtype=np.uint8)
             if c_lesion_full is None:
@@ -360,6 +364,7 @@ def _render_case_row(
                 _, overlay_c = _modality_panels(
                     c_case_dir, modality, slice_idxs, c_prostate_full, c_lesion_full,
                     compare_label, placeholder_shape, sink, case_id,
+                    vol=c_t2 if modality == "t2" else None,
                 )
                 panels_by_modality[modality]["overlay_compare"] = overlay_c
 

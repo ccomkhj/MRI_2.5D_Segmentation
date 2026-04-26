@@ -31,6 +31,19 @@ class CaseAttribution:
     lesion_volume_gt_voxels: int
     status: str  # "ok" or "failed"
 
+    @classmethod
+    def failed(cls, case_id: str, class_label: int = 0) -> "CaseAttribution":
+        """Build a status='failed' record with NaN ratios and zero voxel counts."""
+        nan = float("nan")
+        return cls(
+            case_id=case_id, class_label=class_label,
+            dice=nan, precision=nan, recall=nan,
+            fp_voxels_inside_gland=0, fp_voxels_outside_gland=0,
+            fn_voxels=0, tp_voxels=0,
+            fp_outside_ratio=nan, gland_dice=nan,
+            lesion_volume_gt_voxels=0, status="failed",
+        )
+
 
 def _binarize(arr: np.ndarray, threshold: float) -> np.ndarray:
     return arr >= threshold
@@ -142,11 +155,16 @@ def aggregate_by_class(cases: Iterable[CaseAttribution]) -> List[dict]:
     return rows
 
 
-def _nanmean(values: Iterable[float]) -> float:
+def nanmean(values: Iterable[float]) -> float:
+    """Mean of ``values``, skipping NaNs. Returns NaN if all values are NaN or empty."""
     vals = [v for v in values if not (isinstance(v, float) and math.isnan(v))]
     if not vals:
         return float("nan")
     return float(sum(vals) / len(vals))
+
+
+# Backward-compat alias for the previous private name used inside this module.
+_nanmean = nanmean
 
 
 def write_metrics_by_case(cases: Iterable[CaseAttribution], path: Path) -> None:
