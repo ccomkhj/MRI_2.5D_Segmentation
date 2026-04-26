@@ -158,6 +158,10 @@ class Trainer:
         device: torch.device,
         output_dir: Path,
         run_name: str,
+        *,
+        save_validation_visual: bool = True,
+        validation_visual_metadata_root: Optional[Path] = None,
+        validation_visual_threshold: float = 0.5,
     ) -> None:
         self.model = model.to(device)
         self.task = task
@@ -169,6 +173,9 @@ class Trainer:
         self.output_dir = output_dir
         self.run_name = run_name
         self.run_dir = output_dir / run_name
+        self.save_validation_visual = save_validation_visual
+        self.validation_visual_metadata_root = validation_visual_metadata_root
+        self.validation_visual_threshold = validation_visual_threshold
         _configure_logger(self.run_dir)
 
     def _current_lr(self) -> float:
@@ -237,6 +244,12 @@ class Trainer:
                 best_epoch = epoch
                 best_val_metrics = dict(val_metrics)
                 best_checkpoint = self._save_checkpoint("best")
+                if (
+                    self.save_validation_visual
+                    and val_loader is not None
+                    and self.validation_visual_metadata_root is not None
+                ):
+                    self._save_best_validation_visual(val_loader, epoch=epoch, primary=primary)
 
             last_checkpoint = self._save_checkpoint("last")
 
@@ -278,6 +291,36 @@ class Trainer:
                 "last_checkpoint": last_checkpoint,
             },
         }
+
+    def _save_best_validation_visual(self, val_loader, *, epoch: int, primary: float) -> None:
+        """Render a per-case T2/ADC/CALC + GT + prediction overlay HTML.
+
+        Saved as ``<run_dir>/<run_name>_best_val_visual.html`` (overwritten each
+        time a new best appears) so the artifact is always next to the best
+        checkpoint. Errors are logged but never raised — visualisation must
+        not break training.
+        """
+        from mri.training.validation_visual import save_validation_visual
+
+        try:
+            output_path = self.run_dir / f"{self.run_name}_best_val_visual.html"
+            metric_name = self.task.primary_metric_name()
+            title_extra = f"epoch {epoch} · {metric_name}={primary:.4f}"
+            save_validation_visual(
+                model=self.model,
+                val_loader=val_loader,
+                device=self.device,
+                metadata_root=self.validation_visual_metadata_root,
+                output_path=output_path,
+                threshold=self.validation_visual_threshold,
+                title_extra=title_extra,
+            )
+            logger.info(f"Saved best-checkpoint validation visual: {output_path}")
+        except Exception as exc:  # noqa: BLE001 — viz failures must not break training
+            logger.warning(
+                f"Failed to save validation visual at epoch {epoch}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _save_checkpoint(self, tag: str) -> Path:
         filename = f"{self.run_name}_{tag}.pt"
