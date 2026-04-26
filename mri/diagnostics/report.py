@@ -32,7 +32,7 @@ def _dice_class(value: float) -> str:
     return ""
 
 
-def _png_b64_from_array(rgb: np.ndarray) -> str:
+def png_b64_from_array(rgb: np.ndarray) -> str:
     from PIL import Image
 
     if rgb.dtype != np.uint8:
@@ -66,14 +66,14 @@ def _load_t2_slice(metadata_root: Path, case_id: str, slice_idx: int, shape: tup
     return np.array(image, dtype=np.uint8)
 
 
-def _base_rgb(t2: np.ndarray | None, shape: tuple[int, int]) -> np.ndarray:
+def base_rgb(t2: np.ndarray | None, shape: tuple[int, int]) -> np.ndarray:
     """Build the H,W,3 base image for a panel — T2 grayscale if available, else black."""
     if t2 is None:
         return np.zeros((shape[0], shape[1], 3), dtype=np.uint8)
     return np.stack([t2, t2, t2], axis=-1).astype(np.uint8)
 
 
-def _alpha_blend(base: np.ndarray, color: tuple[int, int, int], alpha: np.ndarray) -> np.ndarray:
+def alpha_blend(base: np.ndarray, color: tuple[int, int, int], alpha: np.ndarray) -> np.ndarray:
     """Alpha-blend a single color over a base image. ``alpha`` is H,W in [0, 1]."""
     a = np.clip(alpha, 0.0, 1.0)[..., None]
     color_arr = np.array(color, dtype=np.float32).reshape(1, 1, 3)
@@ -83,35 +83,35 @@ def _alpha_blend(base: np.ndarray, color: tuple[int, int, int], alpha: np.ndarra
 
 def _heatmap(prob: np.ndarray, t2: np.ndarray | None = None) -> np.ndarray:
     """Red probability heatmap, optionally alpha-blended over a T2 grayscale base."""
-    base = _base_rgb(t2, prob.shape)
+    base = base_rgb(t2, prob.shape)
     # Slightly compressed alpha so even mid-confidence regions are visible.
     alpha = np.clip(prob, 0.0, 1.0) * 0.85
-    return _alpha_blend(base, (255, 0, 0), alpha)
+    return alpha_blend(base, (255, 0, 0), alpha)
 
 
 def _disagreement_panel(
     pred_bin: np.ndarray, gt_bin: np.ndarray, t2: np.ndarray | None = None,
 ) -> np.ndarray:
     """TP=green, FP=red, FN=cyan, alpha-blended over a T2 grayscale base."""
-    base = _base_rgb(t2, pred_bin.shape)
+    base = base_rgb(t2, pred_bin.shape)
     out = base.copy()
     tp = np.logical_and(pred_bin, gt_bin)
     fp = np.logical_and(pred_bin, np.logical_not(gt_bin))
     fn = np.logical_and(np.logical_not(pred_bin), gt_bin)
     if tp.any():
-        out = _alpha_blend(out, (0, 200, 0), tp.astype(np.float32) * 0.6)
+        out = alpha_blend(out, (0, 200, 0), tp.astype(np.float32) * 0.6)
     if fp.any():
-        out = _alpha_blend(out, (220, 0, 0), fp.astype(np.float32) * 0.6)
+        out = alpha_blend(out, (220, 0, 0), fp.astype(np.float32) * 0.6)
     if fn.any():
-        out = _alpha_blend(out, (0, 180, 220), fn.astype(np.float32) * 0.6)
+        out = alpha_blend(out, (0, 180, 220), fn.astype(np.float32) * 0.6)
     return out
 
 
 def _gt_overlay(gt_lesion: np.ndarray, t2: np.ndarray | None = None) -> np.ndarray:
     """GT lesion shown as a cyan tint over a T2 grayscale base (matches html_report.py convention)."""
-    base = _base_rgb(t2, gt_lesion.shape)
+    base = base_rgb(t2, gt_lesion.shape)
     alpha = (gt_lesion.astype(bool).astype(np.float32)) * 0.6
-    return _alpha_blend(base, (0, 200, 255), alpha)
+    return alpha_blend(base, (0, 200, 255), alpha)
 
 
 def _pick_central_slices(
@@ -178,7 +178,7 @@ def _build_panels(
             panels.append({
                 "slice_idx": z,
                 "title": title,
-                "png_b64": _png_b64_from_array(panel),
+                "png_b64": png_b64_from_array(panel),
             })
     return panels
 

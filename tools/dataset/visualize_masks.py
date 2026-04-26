@@ -36,9 +36,9 @@ _THIS = Path(__file__).resolve()
 sys.path.insert(0, str(_THIS.parents[2]))
 
 from mri.diagnostics.report import (
-    _alpha_blend,
-    _base_rgb,
-    _png_b64_from_array,
+    alpha_blend,
+    base_rgb,
+    png_b64_from_array,
 )
 
 
@@ -68,7 +68,7 @@ class PngSink:
     def write(self, rgb: np.ndarray, key: str) -> str:
         """Return either a data URI (embed=True) or a relative-to-HTML path."""
         if self.embed:
-            return "data:image/png;base64," + _png_b64_from_array(rgb)
+            return "data:image/png;base64," + png_b64_from_array(rgb)
         path = self.asset_dir / f"{key}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(rgb if rgb.dtype == np.uint8 else np.clip(rgb, 0, 255).astype(np.uint8)).save(path)
@@ -141,13 +141,13 @@ def _pick_slice_strip(
 
 
 def _t2_plain_rgb(t2_slice: np.ndarray) -> np.ndarray:
-    return _base_rgb(t2_slice, t2_slice.shape)
+    return base_rgb(t2_slice, t2_slice.shape)
 
 
 def _t2_with_mask_rgb(t2_slice: np.ndarray, prostate_mask: np.ndarray, lesion_mask: np.ndarray) -> np.ndarray:
-    base = _base_rgb(t2_slice, t2_slice.shape)
-    out = _alpha_blend(base, _GT_PROSTATE_RGB, (prostate_mask > 127).astype(np.float32) * 0.25)
-    out = _alpha_blend(out, _GT_LESION_RGB, (lesion_mask > 127).astype(np.float32) * 0.55)
+    base = base_rgb(t2_slice, t2_slice.shape)
+    out = alpha_blend(base, _GT_PROSTATE_RGB, (prostate_mask > 127).astype(np.float32) * 0.25)
+    out = alpha_blend(out, _GT_LESION_RGB, (lesion_mask > 127).astype(np.float32) * 0.55)
     return out
 
 
