@@ -12,7 +12,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from mri.diagnostics.attribute import CaseAttribution, aggregate_by_class
+from mri.diagnostics.attribute import CaseAttribution, aggregate_by_class, nanmean
 from mri.diagnostics.audit import AuditFinding
 
 
@@ -217,9 +217,9 @@ def render_report(
     n_failed = sum(1 for c in case_attributions if c.status == "failed")
 
     overall = {
-        "dice": _format_metric(_safe_mean([c.dice for c in case_attributions])),
-        "precision": _format_metric(_safe_mean([c.precision for c in case_attributions])),
-        "gland_dice": _format_metric(_safe_mean([c.gland_dice for c in case_attributions])),
+        "dice": _format_metric(nanmean([c.dice for c in case_attributions])),
+        "precision": _format_metric(nanmean([c.precision for c in case_attributions])),
+        "gland_dice": _format_metric(nanmean([c.gland_dice for c in case_attributions])),
     }
 
     class_rows = aggregate_by_class(case_attributions)
@@ -319,10 +319,3 @@ def render_report(
         worst_unflagged=worst_unflagged,
     )
     output_path.write_text(rendered, encoding="utf-8")
-
-
-def _safe_mean(values: Iterable[float]) -> float:
-    vals = [v for v in values if not (isinstance(v, float) and math.isnan(v))]
-    if not vals:
-        return float("nan")
-    return float(sum(vals) / len(vals))
