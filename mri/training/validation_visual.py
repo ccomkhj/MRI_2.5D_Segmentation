@@ -237,6 +237,10 @@ def save_validation_visual(
         modality_blocks: list[str] = []
         for mod_name, mod_strip in mods.items():
             if mod_strip is None:
+                # Cases where the source modality wasn't acquired (~11% of cohort).
+                # Emit a placeholder block so the reader can distinguish "missing
+                # acquisition" from "renderer skipped this row".
+                modality_blocks.append(_missing_modality_block(mod_name.upper()))
                 continue
             plain_cells, gt_cells, pred_cells = [], [], []
             target_hw = (mod_strip.shape[1], mod_strip.shape[2])
@@ -290,6 +294,17 @@ def _modality_block(mod: str, plain: list[str], gt: list[str], pred: list[str]) 
     )
 
 
+def _missing_modality_block(mod: str) -> str:
+    return (
+        '<div class="modality-block">'
+        f'<div class="strip"><div class="strip-label">{mod}</div>'
+        f'<div class="missing">{mod} was not acquired for this case — '
+        f'training fed zeros for this channel via zero_pad_missing.</div>'
+        '</div>'
+        '</div>'
+    )
+
+
 def _build_html(rows: list[str], n_cases: int, title_extra: str) -> str:
     title = "Best-checkpoint validation visual"
     if title_extra:
@@ -299,6 +314,7 @@ def _build_html(rows: list[str], n_cases: int, title_extra: str) -> str:
     h1 { margin-bottom: 0.2rem; }
     .meta { color: #555; font-size: 0.9rem; margin-bottom: 1rem; }
     .legend { background: #fbf6e8; padding: 0.6rem 0.8rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9rem; }
+    .missing { color: #888; font-style: italic; padding: 0.4rem 0.6rem; }
     .case { border: 1px solid #ddd; border-radius: 4px; padding: 0.6rem 0.8rem; margin-bottom: 1.2rem; }
     .case-id { font-family: monospace; font-size: 0.95rem; margin-bottom: 0.4rem; }
     .modality-block { margin-bottom: 0.6rem; padding-bottom: 0.4rem; border-bottom: 1px dashed #eee; }
