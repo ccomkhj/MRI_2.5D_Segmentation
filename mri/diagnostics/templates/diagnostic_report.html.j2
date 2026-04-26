@@ -1,0 +1,102 @@
+{# mri/diagnostics/templates/diagnostic_report.html.j2 #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Diagnostic — {{ run_name }}</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  td, th { border: 1px solid #ccc; padding: 0.4rem 0.6rem; }
+  th { background: #f4f4f4; }
+  .dice-good { background: #d9f7d9; }
+  .dice-bad  { background: #f7d9d9; }
+  .case { border-top: 1px solid #ddd; padding-top: 1rem; margin-top: 2rem; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; }
+  .grid img { width: 100%; }
+  .meta { color: #555; font-size: 0.9rem; }
+  .flag { display: inline-block; background: #ffeec8; padding: 0 0.4rem; margin-right: 0.3rem; border-radius: 3px; }
+  h2 { margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+<h1>Diagnostic — {{ run_name }}</h1>
+<p class="meta">
+  Checkpoint: <code>{{ checkpoint_path }}</code><br>
+  Split: <code>{{ split }}</code> &middot; Cases: {{ n_cases }} &middot; Generated: {{ generated_at }}
+</p>
+<p>
+  Overall lesion Dice: <b>{{ overall.dice }}</b> &middot;
+  Overall precision: <b>{{ overall.precision }}</b> &middot;
+  Overall gland Dice: <b>{{ overall.gland_dice }}</b>
+  {% if n_failed %}<br>{{ n_failed }} case(s) skipped (inference failure).{% endif %}
+</p>
+
+<h2>Per-class breakdown</h2>
+<table>
+<tr><th>class</th><th>n</th><th>mean Dice</th><th>mean precision</th><th>mean recall</th><th>mean FP-outside ratio</th><th>mean gland Dice</th></tr>
+{% for row in class_table %}
+<tr>
+  <td>{{ row.class_label }}</td>
+  <td>{{ row.n_cases }}</td>
+  <td class="{{ row.dice_class }}">{{ row.mean_dice }}</td>
+  <td>{{ row.mean_precision }}</td>
+  <td>{{ row.mean_recall }}</td>
+  <td>{{ row.mean_fp_outside_ratio }}</td>
+  <td>{{ row.mean_gland_dice }}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>Audit queue</h2>
+{% if audit_rows %}
+<table>
+<tr><th>priority</th><th>case</th><th>class</th><th>flags</th><th>reason</th></tr>
+{% for row in audit_rows %}
+<tr>
+  <td>{{ row.priority }}</td>
+  <td><a href="#case-{{ row.case_id }}">{{ row.case_id }}</a></td>
+  <td>{{ row.class_label }}</td>
+  <td>{% for flag in row.flag_list %}<span class="flag">{{ flag }}</span>{% endfor %}</td>
+  <td>{{ row.reason }}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p><i>No audit flags fired on this run.</i></p>
+{% endif %}
+
+<h2>Per-case detail</h2>
+{% for case in cases %}
+<div class="case" id="case-{{ case.case_id }}">
+  <h3>{{ case.case_id }} <span class="meta">(class {{ case.class_label }}, Dice {{ case.dice }}, FP-outside ratio {{ case.fp_outside_ratio }})</span></h3>
+  {% if case.flag_list %}<p>{% for flag in case.flag_list %}<span class="flag">{{ flag }}</span>{% endfor %}</p>{% endif %}
+  <div class="grid">
+    {% for panel in case.panels %}
+    <div>
+      <div class="meta">slice {{ panel.slice_idx }} — {{ panel.title }}</div>
+      <img src="data:image/png;base64,{{ panel.png_b64 }}" alt="slice {{ panel.slice_idx }} {{ panel.title }}">
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+{% if worst_unflagged %}
+<h2>Worst cases without audit flags</h2>
+<p class="meta">Bottom decile by lesion Dice with no audit findings — likely real model errors.</p>
+<table>
+<tr><th>case</th><th>class</th><th>Dice</th><th>FP-outside ratio</th></tr>
+{% for row in worst_unflagged %}
+<tr>
+  <td><a href="#case-{{ row.case_id }}">{{ row.case_id }}</a></td>
+  <td>{{ row.class_label }}</td>
+  <td>{{ row.dice }}</td>
+  <td>{{ row.fp_outside_ratio }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+
+</body>
+</html>

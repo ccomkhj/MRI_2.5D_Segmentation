@@ -283,6 +283,11 @@ def main(argv=None) -> int:
     )
     write_json(manifest_path, manifest)
 
+    train_cfg = cfg.get("train", {})
+    save_val_visual = bool(train_cfg.get("save_validation_visual", True))
+    metadata_path = cfg.get("data", {}).get("metadata")
+    metadata_root = Path(metadata_path).parent if metadata_path else None
+    val_visual_threshold = float(cfg.get("metrics", {}).get("segmentation_threshold", 0.5))
     trainer = Trainer(
         model=model,
         task=task,
@@ -291,6 +296,9 @@ def main(argv=None) -> int:
         device=device,
         output_dir=output_dir,
         run_name=run_name,
+        save_validation_visual=save_val_visual,
+        validation_visual_metadata_root=metadata_root,
+        validation_visual_threshold=val_visual_threshold,
     )
 
     try:
