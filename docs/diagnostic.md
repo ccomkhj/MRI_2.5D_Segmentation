@@ -39,7 +39,3 @@ The audit surfaces — never auto-excludes — cases that match conservative noi
 | `gt_volume_outlier`           | 3 | GT lesion volume is in the top or bottom 5% of non-empty cases. |
 
 Defaults are hardcoded in `mri/diagnostics/audit.py:AUDIT_DEFAULTS`. Promote to config only if a follow-up actually changes them.
-
-## Design
-
-Spec: [`docs/superpowers/specs/2026-04-25-segmentation-error-analysis-design.md`](superpowers/specs/2026-04-25-segmentation-error-analysis-design.md).

@@ -129,5 +129,4 @@ The diagnosis is a **loop**, not a one-time gate. Each run produces a hypothesis
 ## See also
 
 - [`diagnostic.md`](diagnostic.md) — CLI reference (flags, outputs, heuristic table).
-- [`superpowers/specs/2026-04-25-segmentation-error-analysis-design.md`](superpowers/specs/2026-04-25-segmentation-error-analysis-design.md) — design intent and acceptance criteria.
 - [`current_leader.md`](current_leader.md) — current segmentation leader to run the diagnosis against.
