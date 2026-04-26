@@ -71,6 +71,27 @@ def _pick_strip(lesion: np.ndarray, prostate: np.ndarray, n_slices: int, n_strip
     return [int(round(z_lo + i * (z_hi - z_lo) / (n_strip - 1))) for i in range(n_strip)]
 
 
+def _resize_to(arr: np.ndarray, target_hw: tuple[int, int], mode: str) -> np.ndarray:
+    """Resize a 2D array (uint8 mask or float32 probability) to ``target_hw``.
+
+    ``mode`` is ``"nearest"`` for binary masks (preserves 0/255 values) or
+    ``"bilinear"`` for continuous probability maps. The model is trained at a
+    smaller working resolution than the on-disk modality slices, so each
+    overlay needs the prediction / mask resampled up to match the slice
+    being rendered before ``alpha_blend`` can broadcast.
+    """
+    if arr.shape == target_hw:
+        return arr
+    pil_mode = Image.NEAREST if mode == "nearest" else Image.BILINEAR
+    if arr.dtype == np.float32:
+        # PIL doesn't resize float32 cleanly; route through uint8 *255 then back.
+        scaled = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+        img = Image.fromarray(scaled).resize((target_hw[1], target_hw[0]), pil_mode)
+        return np.asarray(img, dtype=np.float32) / 255.0
+    img = Image.fromarray(arr.astype(np.uint8)).resize((target_hw[1], target_hw[0]), pil_mode)
+    return np.asarray(img)
+
+
 def _save_panel(rgb: np.ndarray, case_dir: Path, name: str, rel_prefix: str) -> str:
     """Write a panel PNG into ``case_dir`` and return the path relative to the HTML.
 
@@ -218,11 +239,15 @@ def save_validation_visual(
             if mod_strip is None:
                 continue
             plain_cells, gt_cells, pred_cells = [], [], []
+            target_hw = (mod_strip.shape[1], mod_strip.shape[2])
             for i, z in enumerate(slice_idxs):
                 mod_slice = mod_strip[i]
+                gt_p = _resize_to(gt_prostate[i], target_hw, "nearest")
+                gt_l = _resize_to(gt_lesion[i], target_hw, "nearest")
+                pred_p = _resize_to(pred_strip[i], target_hw, "bilinear")
                 plain = base_rgb(mod_slice, mod_slice.shape)
-                gt = _modality_with_overlay(mod_slice, gt_prostate[i], gt_lesion[i])
-                pred = _modality_with_pred(mod_slice, pred_strip[i], threshold)
+                gt = _modality_with_overlay(mod_slice, gt_p, gt_l)
+                pred = _modality_with_pred(mod_slice, pred_p, threshold)
                 plain_cells.append(_panel(
                     _save_panel(plain, case_asset_dir, f"{mod_name}_plain_z{z}", rel_prefix),
                     f"z={z}",
