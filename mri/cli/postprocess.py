@@ -22,8 +22,15 @@ from typing import Sequence
 import numpy as np
 import yaml
 
-from mri.cli.diagnose import resolve_run_dir
+from mri.cli.diagnose import (
+    resolve_run_dir,
+    _build_model_and_dataloader,
+    _create_segmentation_model,
+    _load_checkpoint,
+)
+from mri.diagnostics.dump import dump_predictions
 from mri.diagnostics.postprocess import apply_postprocess
+from mri.training.trainer import resolve_device
 
 
 def resolve_postprocess_thresholds(
@@ -113,12 +120,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     postprocessed_dir = diag_root / "postprocessed"
 
     if not predictions_dir.exists():
-        # Dump-fallback wiring lands in Task 9. For now, error clearly.
-        raise SystemExit(
-            f"[postprocess] no cached predictions at {predictions_dir}. "
-            "Run `python -m mri.cli.diagnose` first (or wait for Task 9 "
-            "which auto-runs the dump)."
+        loader, num_slices_per_case = _build_model_and_dataloader(cfg, args.split)
+        model = _create_segmentation_model(
+            cfg["model"]["name"], **(cfg["model"].get("params") or {}),
         )
+        device = resolve_device(args.device)
+        _load_checkpoint(model, paths.checkpoint, device)
+        dump_summary = dump_predictions(
+            model=model,
+            dataloader=loader,
+            device=device,
+            output_dir=predictions_dir,
+            num_slices_per_case=num_slices_per_case,
+            force=args.force,
+            lesion_threshold=lesion_threshold,
+            gland_threshold=gland_threshold,
+        )
+        print(f"[postprocess] dump: {dump_summary}")
 
     case_dirs = sorted(p for p in predictions_dir.iterdir() if p.is_dir())
     n_written = 0
