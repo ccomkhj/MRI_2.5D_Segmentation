@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import warnings
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
 
 def resolve_postprocess_thresholds(
