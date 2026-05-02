@@ -115,3 +115,106 @@ def test_lesion_iou_partial_overlap_value() -> None:
 
     assert result.max_slice_iou == 0.5
     assert result.argmax_slice == 0
+
+
+from mri.diagnostics.detection import (
+    LesionRow, CaseRow, evaluate_case,
+)
+
+
+def test_evaluate_case_positive_two_lesions_one_detected() -> None:
+    gt = np.zeros((4, 6, 6), dtype=np.uint8)
+    gt[1, 1, 1] = 1
+    gt[2, 4, 4] = 1
+
+    pred = np.zeros((4, 6, 6), dtype=np.uint8)
+    pred[1, 1, 1] = 1
+
+    case_row, lesion_rows = evaluate_case(
+        case_id="c1", class_label=2,
+        gt_lesion=gt, pred_lesion=pred,
+        correctness_iou=0.1, negative_area_frac=0.02,
+        connectivity_rank=1,
+    )
+
+    assert case_row.case_kind == "positive"
+    assert case_row.n_gt_lesions == 2
+    assert case_row.n_detected_lesions == 1
+    assert case_row.lesion_recall == 0.5
+    assert case_row.max_pred_area_frac is None
+    assert case_row.negative_correct is None
+
+    assert len(lesion_rows) == 2
+    detected_ids = {row.lesion_id for row in lesion_rows if row.detected}
+    assert len(detected_ids) == 1
+
+
+def test_evaluate_case_negative_below_threshold_is_correct() -> None:
+    gt = np.zeros((3, 10, 10), dtype=np.uint8)
+    pred = np.zeros((3, 10, 10), dtype=np.uint8)
+    pred[0, 0, 0] = 1
+
+    case_row, lesion_rows = evaluate_case(
+        case_id="c2", class_label=0,
+        gt_lesion=gt, pred_lesion=pred,
+        correctness_iou=0.1, negative_area_frac=0.02,
+        connectivity_rank=1,
+    )
+
+    assert case_row.case_kind == "negative"
+    assert case_row.n_gt_lesions == 0
+    assert case_row.n_detected_lesions == 0
+    assert case_row.lesion_recall is None
+    assert case_row.max_pred_area_frac == 0.01
+    assert case_row.negative_correct is True
+    assert lesion_rows == []
+
+
+def test_evaluate_case_negative_above_threshold_is_false() -> None:
+    gt = np.zeros((3, 10, 10), dtype=np.uint8)
+    pred = np.zeros((3, 10, 10), dtype=np.uint8)
+    pred[0, 0, 0:3] = 1
+
+    case_row, _ = evaluate_case(
+        case_id="c3", class_label=0,
+        gt_lesion=gt, pred_lesion=pred,
+        correctness_iou=0.1, negative_area_frac=0.02,
+        connectivity_rank=1,
+    )
+
+    assert case_row.negative_correct is False
+    assert case_row.max_pred_area_frac == 0.03
+
+
+def test_evaluate_case_negative_at_threshold_is_correct() -> None:
+    gt = np.zeros((1, 10, 10), dtype=np.uint8)
+    pred = np.zeros((1, 10, 10), dtype=np.uint8)
+    pred[0, 0, 0:2] = 1
+
+    case_row, _ = evaluate_case(
+        case_id="c4", class_label=0,
+        gt_lesion=gt, pred_lesion=pred,
+        correctness_iou=0.1, negative_area_frac=0.02,
+        connectivity_rank=1,
+    )
+
+    assert case_row.negative_correct is True
+
+
+def test_evaluate_case_positive_iou_at_threshold_is_not_detected() -> None:
+    gt = np.zeros((1, 10, 10), dtype=np.uint8)
+    gt[0, 0, 0:10] = 1
+    pred = np.zeros((1, 10, 10), dtype=np.uint8)
+    pred[0, 0, 0] = 1  # iou = 1/10 = 0.1 exactly => detected = False (strict >)
+
+    case_row, lesion_rows = evaluate_case(
+        case_id="c5", class_label=2,
+        gt_lesion=gt, pred_lesion=pred,
+        correctness_iou=0.1, negative_area_frac=0.02,
+        connectivity_rank=1,
+    )
+
+    assert case_row.case_kind == "positive"
+    assert lesion_rows[0].max_slice_iou == 0.1
+    assert lesion_rows[0].detected is False
+    assert case_row.n_detected_lesions == 0

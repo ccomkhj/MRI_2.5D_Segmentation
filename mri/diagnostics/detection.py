@@ -91,3 +91,115 @@ def compute_lesion_iou(
         max_slice_iou=float(max_iou),
         argmax_slice=int(argmax_z),
     )
+
+
+@dataclass(frozen=True)
+class LesionRow:
+    """One row of metrics_by_lesion.csv (per 3D GT component)."""
+    case_id: str
+    class_label: int
+    lesion_id: int
+    lesion_voxels: int
+    slices: str           # ";"-joined z indices the component spans
+    n_slices: int
+    max_slice_iou: float
+    argmax_slice: int
+    detected: bool
+
+
+@dataclass(frozen=True)
+class CaseRow:
+    """One row of metrics_by_case.csv. Mixed positive/negative case schema.
+
+    For positive cases: ``max_pred_area_frac`` and ``negative_correct`` are None.
+    For negative cases: ``lesion_recall`` is None.
+    Writers translate None to empty CSV cells.
+    """
+    case_id: str
+    class_label: int
+    case_kind: str        # "positive" | "negative"
+    n_gt_lesions: int
+    n_detected_lesions: int
+    lesion_recall: float | None
+    max_pred_area_frac: float | None
+    negative_correct: bool | None
+
+
+def evaluate_case(
+    *,
+    case_id: str,
+    class_label: int,
+    gt_lesion: np.ndarray,
+    pred_lesion: np.ndarray,
+    correctness_iou: float,
+    negative_area_frac: float,
+    connectivity_rank: int,
+) -> tuple[CaseRow, list[LesionRow]]:
+    """Score one case under the per-3D-lesion + negative-area rule.
+
+    Returns:
+      ``(case_row, lesion_rows)``. ``lesion_rows`` is empty for negative cases.
+    """
+    assert gt_lesion.shape == pred_lesion.shape, (
+        f"shape mismatch: gt {gt_lesion.shape} vs pred {pred_lesion.shape}"
+    )
+
+    labels, n_components = label_lesion_components(
+        gt_lesion, connectivity_rank=connectivity_rank,
+    )
+
+    if n_components == 0:
+        Z, H, W = pred_lesion.shape
+        per_slice_voxels = pred_lesion.astype(bool).reshape(Z, -1).sum(axis=1)
+        per_slice_frac = per_slice_voxels / float(H * W)
+        max_frac = float(per_slice_frac.max()) if Z > 0 else 0.0
+        return (
+            CaseRow(
+                case_id=case_id,
+                class_label=class_label,
+                case_kind="negative",
+                n_gt_lesions=0,
+                n_detected_lesions=0,
+                lesion_recall=None,
+                max_pred_area_frac=max_frac,
+                negative_correct=(max_frac <= negative_area_frac),
+            ),
+            [],
+        )
+
+    pred_bool = pred_lesion.astype(bool)
+    lesion_rows: list[LesionRow] = []
+    detected = 0
+    for k in range(1, n_components + 1):
+        component = (labels == k)
+        ious = compute_lesion_iou(component, pred_bool)
+        is_detected = ious.max_slice_iou > correctness_iou
+        if is_detected:
+            detected += 1
+        lesion_rows.append(
+            LesionRow(
+                case_id=case_id,
+                class_label=class_label,
+                lesion_id=k,
+                lesion_voxels=int(component.sum()),
+                slices=";".join(str(z) for z in ious.slices),
+                n_slices=len(ious.slices),
+                max_slice_iou=ious.max_slice_iou,
+                argmax_slice=ious.argmax_slice,
+                detected=is_detected,
+            )
+        )
+
+    return (
+        CaseRow(
+            case_id=case_id,
+            class_label=class_label,
+            case_kind="positive",
+            n_gt_lesions=n_components,
+            n_detected_lesions=detected,
+            lesion_recall=detected / n_components,
+            max_pred_area_frac=None,
+            negative_correct=None,
+        ),
+        lesion_rows,
+    )
