@@ -30,6 +30,11 @@ from mri.cli.diagnose import resolve_run_dir
 from mri.diagnostics.detection import (
     LesionRow, CaseRow, evaluate_case,
     write_lesion_csv, write_case_csv, build_summary, write_summary_json,
+    label_lesion_components,
+)
+from mri.diagnostics.visualization import (
+    build_case_figure, write_case_html, write_index_html,
+    ComponentSpec, CaseSummary,
 )
 
 
@@ -41,6 +46,12 @@ def _load_case(predictions_dir: Path, postprocessed_dir: Path, case_id: str):
     pred = np.load(postprocessed_dir / case_id / "lesion_mask.npz")
     meta = json.loads((predictions_dir / case_id / "meta.json").read_text())
     return gt["lesion"], pred["mask"], int(meta.get("class_label", 0))
+
+
+def _is_failed_case(case_row: CaseRow, case_lesion_rows: list[LesionRow]) -> bool:
+    if case_row.case_kind == "negative":
+        return case_row.negative_correct is False
+    return any(not r.detected for r in case_lesion_rows)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -119,8 +130,70 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_summary_json(summary, eval_dir / "summary.json")
 
     if args.visualize_only != "none":
-        # Wired in Task 13.
-        pass
+        visuals_dir = eval_dir / "visuals"
+        visuals_dir.mkdir(parents=True, exist_ok=True)
+
+        case_id_to_lesion_rows: dict[str, list[LesionRow]] = {}
+        for row in lesion_rows:
+            case_id_to_lesion_rows.setdefault(row.case_id, []).append(row)
+
+        rendered: list[CaseSummary] = []
+        for case_row in case_rows:
+            case_lesion_rows = case_id_to_lesion_rows.get(case_row.case_id, [])
+            if args.visualize_only == "failed" and not _is_failed_case(
+                case_row, case_lesion_rows,
+            ):
+                continue
+
+            gt = np.load(predictions_dir / case_row.case_id / "gt.npz")
+            gland_gt = gt["gland"]
+            lesion_gt = gt["lesion"]
+            pred_lesion = np.load(
+                postprocessed_dir / case_row.case_id / "lesion_mask.npz",
+            )["mask"]
+
+            labels, n_components = label_lesion_components(
+                lesion_gt, connectivity_rank=connectivity_rank,
+            )
+            detected_ids = {row.lesion_id for row in case_lesion_rows if row.detected}
+            components = [
+                ComponentSpec(
+                    mask=(labels == k),
+                    lesion_id=k,
+                    detected=(k in detected_ids),
+                )
+                for k in range(1, n_components + 1)
+            ]
+
+            fig = build_case_figure(
+                gt_gland=gland_gt,
+                gt_lesion_components=components,
+                pred_lesion=pred_lesion,
+                downsample=args.downsample_vis,
+            )
+            write_case_html(
+                fig,
+                visuals_dir / f"{case_row.case_id}.html",
+                header_meta={
+                    "case_id": case_row.case_id,
+                    "class_label": case_row.class_label,
+                    "n_gt_lesions": case_row.n_gt_lesions,
+                    "n_detected_lesions": case_row.n_detected_lesions,
+                    "lesion_recall": case_row.lesion_recall,
+                    "negative_correct": case_row.negative_correct,
+                },
+                use_cdn=args.plotly_cdn,
+            )
+            rendered.append(CaseSummary(
+                case_id=case_row.case_id,
+                case_kind=case_row.case_kind,
+                n_gt_lesions=case_row.n_gt_lesions,
+                n_detected_lesions=case_row.n_detected_lesions,
+                lesion_recall=case_row.lesion_recall,
+                negative_correct=case_row.negative_correct,
+            ))
+
+        write_index_html(rendered, visuals_dir / "index.html")
 
     print(f"[evaluate] wrote evaluation/ to {eval_dir}")
     return 0

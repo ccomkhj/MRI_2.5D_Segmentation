@@ -137,3 +137,55 @@ def test_evaluate_cli_errors_when_postprocessed_missing(tmp_path: Path) -> None:
 
     with pytest.raises(SystemExit, match="postprocess"):
         evaluate_cli.main([str(run_dir), "--visualize-only", "none"])
+
+
+def test_evaluate_cli_visualize_all_writes_html_per_case(tmp_path: Path) -> None:
+    run_dir = _seed_run_dir(tmp_path)
+    Z, H, W = 4, 8, 8
+    gt = np.zeros((Z, H, W), dtype=np.uint8); gt[1, 2, 2] = 1
+    pred = np.zeros((Z, H, W), dtype=np.uint8); pred[1, 2, 2] = 1
+    _seed_predictions(run_dir, "case_a",
+                      gt_lesion=gt, gt_gland=np.zeros_like(gt))
+    _seed_postprocessed(run_dir, "case_a",
+                         lesion_mask=pred, gland_mask=np.zeros_like(gt))
+    gt_neg = np.zeros((1, 8, 8), dtype=np.uint8)
+    pred_neg = np.zeros_like(gt_neg)
+    _seed_predictions(run_dir, "case_b",
+                      gt_lesion=gt_neg, gt_gland=np.zeros_like(gt_neg))
+    _seed_postprocessed(run_dir, "case_b",
+                         lesion_mask=pred_neg, gland_mask=np.zeros_like(gt_neg))
+
+    rc = evaluate_cli.main([str(run_dir), "--visualize-only", "all"])
+
+    assert rc == 0
+    visuals = run_dir / "diagnostic" / "evaluation" / "visuals"
+    assert (visuals / "case_a.html").exists()
+    assert (visuals / "case_b.html").exists()
+    assert (visuals / "index.html").exists()
+
+
+def test_evaluate_cli_visualize_failed_only_renders_failures(tmp_path: Path) -> None:
+    run_dir = _seed_run_dir(tmp_path)
+    Z, H, W = 1, 10, 10
+    gt_pass = np.zeros((Z, H, W), dtype=np.uint8); gt_pass[0, 0, 0] = 1
+    pred_pass = np.zeros_like(gt_pass); pred_pass[0, 0, 0] = 1
+    _seed_predictions(run_dir, "case_pass",
+                      gt_lesion=gt_pass, gt_gland=np.zeros_like(gt_pass))
+    _seed_postprocessed(run_dir, "case_pass",
+                         lesion_mask=pred_pass,
+                         gland_mask=np.zeros_like(gt_pass))
+    gt_fail = np.zeros((Z, H, W), dtype=np.uint8); gt_fail[0, 5, 5] = 1
+    pred_fail = np.zeros_like(gt_fail)
+    _seed_predictions(run_dir, "case_fail",
+                      gt_lesion=gt_fail, gt_gland=np.zeros_like(gt_fail))
+    _seed_postprocessed(run_dir, "case_fail",
+                         lesion_mask=pred_fail,
+                         gland_mask=np.zeros_like(gt_fail))
+
+    rc = evaluate_cli.main([str(run_dir), "--visualize-only", "failed"])
+
+    assert rc == 0
+    visuals = run_dir / "diagnostic" / "evaluation" / "visuals"
+    assert not (visuals / "case_pass.html").exists()
+    assert (visuals / "case_fail.html").exists()
+    assert (visuals / "index.html").exists()
