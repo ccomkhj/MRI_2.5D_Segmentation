@@ -11,8 +11,6 @@ Reads ``<run_dir>/diagnostic/postprocessed/<case>/lesion_mask.npz`` and the
 matching ``<run_dir>/diagnostic/predictions/<case>/{gt.npz, meta.json}``
 and writes ``<run_dir>/diagnostic/evaluation/{metrics_by_lesion.csv,
 metrics_by_case.csv, summary.json, visuals/...}``.
-
-Visual rendering is wired in Task 13 + Task 14; Task 10 emits CSV/JSON only.
 """
 
 from __future__ import annotations
@@ -24,7 +22,6 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
-import yaml
 
 from mri.cli.diagnose import resolve_run_dir
 from mri.diagnostics.detection import (
@@ -70,9 +67,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     paths = resolve_run_dir(args.run_dir)
-    cfg = yaml.safe_load(paths.resolved_config.read_text()) or {}
-    seg_threshold = (cfg.get("metrics") or {}).get("segmentation_threshold", 0.5)
-
     diag_root = paths.run_dir / "diagnostic"
     predictions_dir = diag_root / "predictions"
     postprocessed_dir = diag_root / "postprocessed"
@@ -84,6 +78,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"[evaluate] no postprocessed predictions at {postprocessed_dir}. "
             "Run `python -m mri.cli.postprocess <run_dir>` first."
         )
+
+    # Read the actual thresholds applied during postprocess from the first
+    # available case meta. Falls back to 0.5 if no per-case meta exists.
+    lesion_threshold_used = 0.5
+    gland_threshold_used = 0.5
+    for case_dir in sorted(p for p in postprocessed_dir.iterdir() if p.is_dir()):
+        meta_path = case_dir / "meta.json"
+        if meta_path.exists():
+            try:
+                pp_meta = json.loads(meta_path.read_text())
+                lesion_threshold_used = float(pp_meta.get("lesion_threshold", 0.5))
+                gland_threshold_used = float(pp_meta.get("gland_threshold", 0.5))
+                break
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
 
     case_ids = sorted(p.name for p in postprocessed_dir.iterdir() if p.is_dir())
     case_rows: list[CaseRow] = []
@@ -122,8 +131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "correctness_iou": args.correctness_iou,
             "negative_area_frac": args.negative_area_frac,
             "connectivity": args.connectivity,
-            "lesion_threshold": float(seg_threshold),
-            "gland_threshold": float(seg_threshold),
+            "lesion_threshold": lesion_threshold_used,
+            "gland_threshold": gland_threshold_used,
         },
         cases_skipped=cases_skipped,
     )

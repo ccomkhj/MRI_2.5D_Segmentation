@@ -46,8 +46,8 @@ Useful flags:
 
 - `--lesion-threshold 0.4 --gland-threshold 0.3` — override the thresholds
   (default: `metrics.segmentation_threshold` from the resolved config).
-- `--force` — re-run inference (regenerates `predictions/` and
-  `postprocessed/`).
+- `--force` — regenerate `postprocessed/` even if it already exists (re-run
+  postprocessing under different thresholds without re-running inference).
 
 ## Step 2 — Evaluate
 

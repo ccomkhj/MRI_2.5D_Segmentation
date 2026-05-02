@@ -6,8 +6,8 @@ Usage::
         [--lesion-threshold FLOAT] [--gland-threshold FLOAT] [--device DEV]
 
 Reads ``<run_dir>/diagnostic/predictions/<case>/prob.npz`` (running
-``mri.diagnostics.dump.dump_predictions`` first if the cache is missing or
-``--force`` is set; that wiring is added in Task 9) and writes
+``mri.diagnostics.dump.dump_predictions`` first if the cache is missing) and
+writes
 ``<run_dir>/diagnostic/postprocessed/<case>/{lesion_mask.npz, gland_mask.npz, meta.json}``.
 """
 
