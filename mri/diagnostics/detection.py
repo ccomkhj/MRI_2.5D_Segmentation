@@ -6,7 +6,11 @@ for I/O.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import csv as _csv
+import json as _json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 from scipy import ndimage
@@ -203,3 +207,80 @@ def evaluate_case(
         ),
         lesion_rows,
     )
+
+
+def _empty_for_none(value: Any) -> Any:
+    """Translate None to empty string for CSV cells. Other types pass through."""
+    return "" if value is None else value
+
+
+def write_lesion_csv(rows: Iterable[LesionRow], path: Path) -> None:
+    """Write metrics_by_lesion.csv. Empty list => header-only file."""
+    rows = list(rows)
+    fieldnames = [
+        "case_id", "class_label", "lesion_id", "lesion_voxels",
+        "slices", "n_slices", "max_slice_iou", "argmax_slice", "detected",
+    ]
+    with Path(path).open("w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(asdict(row))
+
+
+def write_case_csv(rows: Iterable[CaseRow], path: Path) -> None:
+    """Write metrics_by_case.csv. None values become empty cells."""
+    rows = list(rows)
+    fieldnames = [
+        "case_id", "class_label", "case_kind",
+        "n_gt_lesions", "n_detected_lesions", "lesion_recall",
+        "max_pred_area_frac", "negative_correct",
+    ]
+    with Path(path).open("w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            d = asdict(row)
+            writer.writerow({k: _empty_for_none(v) for k, v in d.items()})
+
+
+def build_summary(
+    *,
+    case_rows: Iterable[CaseRow],
+    lesion_rows: Iterable[LesionRow],
+    params: Mapping[str, Any],
+    cases_skipped: Iterable[str],
+) -> dict[str, Any]:
+    """Aggregate cohort metrics into the summary.json shape."""
+    case_rows = list(case_rows)
+    lesion_rows = list(lesion_rows)
+
+    pos_cases = [c for c in case_rows if c.case_kind == "positive"]
+    neg_cases = [c for c in case_rows if c.case_kind == "negative"]
+
+    n_gt_lesions = sum(c.n_gt_lesions for c in pos_cases)
+    n_detected = sum(c.n_detected_lesions for c in pos_cases)
+    lesion_recall = (n_detected / n_gt_lesions) if n_gt_lesions > 0 else 0.0
+
+    n_neg_correct = sum(1 for c in neg_cases if c.negative_correct)
+    neg_accuracy = (n_neg_correct / len(neg_cases)) if neg_cases else 0.0
+
+    return {
+        "params": dict(params),
+        "positives": {
+            "n_cases": len(pos_cases),
+            "n_gt_lesions": n_gt_lesions,
+            "n_detected_lesions": n_detected,
+            "lesion_recall": lesion_recall,
+        },
+        "negatives": {
+            "n_cases": len(neg_cases),
+            "n_correct": n_neg_correct,
+            "negative_accuracy": neg_accuracy,
+        },
+        "cases_skipped": list(cases_skipped),
+    }
+
+
+def write_summary_json(summary: Mapping[str, Any], path: Path) -> None:
+    Path(path).write_text(_json.dumps(summary, indent=2))

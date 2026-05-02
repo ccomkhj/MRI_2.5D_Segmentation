@@ -218,3 +218,112 @@ def test_evaluate_case_positive_iou_at_threshold_is_not_detected() -> None:
     assert lesion_rows[0].max_slice_iou == 0.1
     assert lesion_rows[0].detected is False
     assert case_row.n_detected_lesions == 0
+
+
+import csv
+import json
+from pathlib import Path
+
+from mri.diagnostics.detection import (
+    write_lesion_csv, write_case_csv, build_summary, write_summary_json,
+)
+
+
+def _make_pos_rows() -> tuple[CaseRow, list[LesionRow]]:
+    case = CaseRow(
+        case_id="c1", class_label=2, case_kind="positive",
+        n_gt_lesions=2, n_detected_lesions=1, lesion_recall=0.5,
+        max_pred_area_frac=None, negative_correct=None,
+    )
+    rows = [
+        LesionRow(case_id="c1", class_label=2, lesion_id=1, lesion_voxels=4,
+                  slices="1;2", n_slices=2, max_slice_iou=0.42, argmax_slice=2,
+                  detected=True),
+        LesionRow(case_id="c1", class_label=2, lesion_id=2, lesion_voxels=3,
+                  slices="3", n_slices=1, max_slice_iou=0.05, argmax_slice=3,
+                  detected=False),
+    ]
+    return case, rows
+
+
+def _make_neg_row() -> CaseRow:
+    return CaseRow(
+        case_id="c2", class_label=0, case_kind="negative",
+        n_gt_lesions=0, n_detected_lesions=0, lesion_recall=None,
+        max_pred_area_frac=0.015, negative_correct=True,
+    )
+
+
+def test_lesion_csv_columns_and_values(tmp_path: Path) -> None:
+    _, rows = _make_pos_rows()
+    out = tmp_path / "metrics_by_lesion.csv"
+
+    write_lesion_csv(rows, out)
+
+    with out.open() as f:
+        reader = csv.DictReader(f)
+        records = list(reader)
+    assert reader.fieldnames == [
+        "case_id", "class_label", "lesion_id", "lesion_voxels",
+        "slices", "n_slices", "max_slice_iou", "argmax_slice", "detected",
+    ]
+    assert records[0]["lesion_id"] == "1"
+    assert records[0]["detected"] == "True"
+    assert records[1]["detected"] == "False"
+
+
+def test_case_csv_writes_empty_string_for_none(tmp_path: Path) -> None:
+    case_pos, _ = _make_pos_rows()
+    case_neg = _make_neg_row()
+    out = tmp_path / "metrics_by_case.csv"
+
+    write_case_csv([case_pos, case_neg], out)
+
+    text = out.read_text()
+    assert "None" not in text
+    assert "nan" not in text.lower()
+
+    with out.open() as f:
+        reader = csv.DictReader(f)
+        records = list(reader)
+    assert records[0]["max_pred_area_frac"] == ""
+    assert records[0]["negative_correct"] == ""
+    assert records[1]["lesion_recall"] == ""
+    assert records[0]["lesion_recall"] == "0.5"
+    assert records[1]["max_pred_area_frac"] == "0.015"
+    assert records[1]["negative_correct"] == "True"
+
+
+def test_build_summary_aggregates_positive_and_negative(tmp_path: Path) -> None:
+    case_pos, rows_pos = _make_pos_rows()
+    case_neg = _make_neg_row()
+
+    summary = build_summary(
+        case_rows=[case_pos, case_neg],
+        lesion_rows=rows_pos,
+        params={
+            "correctness_iou": 0.1, "negative_area_frac": 0.02,
+            "connectivity": 6, "lesion_threshold": 0.5, "gland_threshold": 0.5,
+        },
+        cases_skipped=[],
+    )
+
+    assert summary["positives"]["n_cases"] == 1
+    assert summary["positives"]["n_gt_lesions"] == 2
+    assert summary["positives"]["n_detected_lesions"] == 1
+    assert summary["positives"]["lesion_recall"] == 0.5
+    assert summary["negatives"]["n_cases"] == 1
+    assert summary["negatives"]["n_correct"] == 1
+    assert summary["negatives"]["negative_accuracy"] == 1.0
+    assert summary["params"]["correctness_iou"] == 0.1
+    assert summary["cases_skipped"] == []
+
+
+def test_write_summary_json_round_trip(tmp_path: Path) -> None:
+    summary = {"params": {"correctness_iou": 0.1}, "positives": {"n_cases": 0}}
+    out = tmp_path / "summary.json"
+
+    write_summary_json(summary, out)
+
+    loaded = json.loads(out.read_text())
+    assert loaded == summary
