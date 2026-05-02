@@ -51,6 +51,6 @@ def apply_postprocess(
     if not gland_present:
         lesion_mask = np.zeros_like(lesion_mask)
     else:
-        lesion_mask = (lesion_mask & gland_mask).astype(np.uint8)
+        lesion_mask = lesion_mask & gland_mask
 
     return lesion_mask, gland_mask, gland_present

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from mri.diagnostics.postprocess import apply_postprocess
 
@@ -109,7 +110,6 @@ def test_shape_mismatch_raises() -> None:
     lesion_prob = np.zeros((3, 4, 4), dtype=np.float32)
     gland_prob = np.zeros((3, 4, 5), dtype=np.float32)
 
-    import pytest
     with pytest.raises(AssertionError):
         apply_postprocess(
             lesion_prob, gland_prob, lesion_threshold=0.5, gland_threshold=0.5,
