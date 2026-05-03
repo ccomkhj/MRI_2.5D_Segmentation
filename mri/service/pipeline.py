@@ -649,6 +649,8 @@ def run_aligned_segmentation(
         "predictions_dir": str(predictions_dir),
         "overlays_dir": str(case_out / "overlays"),
         "html_report_path": report_info["report_path"],
+        "visual_3d_path": str(case_out / "visual_3d.html") if visual_3d_href else None,
+        "postprocess_stats": postprocess_stats,
         "prostate_slices": report_info["prostate_slices"],
         "target_slices": report_info["target_slices"],
         "target_slices_by_threshold": report_info["target_slices_by_threshold"],
