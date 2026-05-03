@@ -1,0 +1,9 @@
+{
+  "case_id": "class3/case_0125",
+  "lesion_threshold": 0.1,
+  "gland_threshold": 0.5,
+  "gland_present": true,
+  "lesion_voxels_raw": 5461,
+  "lesion_voxels_post": 4874,
+  "gland_voxels": 99519
+}
