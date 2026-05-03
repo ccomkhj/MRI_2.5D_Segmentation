@@ -133,10 +133,16 @@ class CaseSummary:
 
 
 def _format_header(meta: dict) -> str:
-    """Render a small HTML header bar above the figure."""
+    """Render a small HTML header bar above the figure.
+
+    Recognizes both evaluation-context fields (class_label, n_gt_lesions,
+    n_detected_lesions, lesion_recall, negative_correct) and inference-context
+    fields (gland_present, lesion_voxels_post). None values are skipped.
+    """
     fields = []
     for key in ("case_id", "class_label", "n_gt_lesions",
-                "n_detected_lesions", "lesion_recall", "negative_correct"):
+                "n_detected_lesions", "lesion_recall", "negative_correct",
+                "gland_present", "lesion_voxels_post"):
         if key in meta and meta[key] is not None:
             fields.append(f"<b>{key}:</b> {meta[key]}")
     return "<div style='font-family:sans-serif;padding:8px;'>" + " &nbsp; ".join(fields) + "</div>"
