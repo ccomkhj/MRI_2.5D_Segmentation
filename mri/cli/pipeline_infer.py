@@ -11,8 +11,10 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from mri.cli.postprocess import resolve_postprocess_thresholds
 from mri.config.loader import load_config
 from mri.experiments.runtime import utc_now_iso, write_json, write_yaml
+from mri.inference.postprocess_visualize import run_stage as run_postprocess_visualize_stage
 
 
 def _set_nested_value(payload: Dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -100,6 +102,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root directory for generated configs, manifests, and predictions",
     )
     parser.add_argument("--device", help="Device override passed to inference CLI")
+    parser.add_argument(
+        "--lesion-threshold",
+        type=float,
+        default=None,
+        help="Lesion (target) probability threshold for postprocessing. Defaults to "
+             "metrics.segmentation_threshold from the segmentation config.",
+    )
+    parser.add_argument(
+        "--gland-threshold",
+        type=float,
+        default=None,
+        help="Gland (prostate) probability threshold for postprocessing. Defaults to "
+             "metrics.segmentation_threshold from the segmentation config.",
+    )
+    parser.add_argument(
+        "--no-postprocess",
+        action="store_true",
+        help="Skip the postprocess + 3D visualization stage entirely.",
+    )
+    parser.add_argument(
+        "--no-3d-visuals",
+        action="store_true",
+        help="Run postprocess but skip the per-case visual_3d.html emission.",
+    )
+    parser.add_argument(
+        "--plotly-cdn",
+        action="store_true",
+        help="Load Plotly from CDN in per-case HTML instead of inlining (~3 MB smaller per file).",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -218,6 +249,27 @@ def main(argv=None) -> int:
             )
         )
 
+    seg_resolved_cfg = load_config(seg_config_path)
+    lesion_threshold, gland_threshold = resolve_postprocess_thresholds(
+        seg_resolved_cfg,
+        lesion_arg=args.lesion_threshold,
+        gland_arg=args.gland_threshold,
+    )
+    postprocess_status = "skipped" if args.no_postprocess else (
+        "planned" if args.dry_run else "running"
+    )
+    manifest["stages"].append(
+        _stage_record(
+            "postprocess_visualize",
+            postprocess_status,
+            output_root=str(seg_pred_root.resolve()),
+            lesion_threshold=lesion_threshold,
+            gland_threshold=gland_threshold,
+            html_enabled=not args.no_3d_visuals,
+            artifact_pattern="<case>/{lesion_mask_postprocessed.npy, gland_mask.npy, postprocess_meta.json, visual_3d.html}",
+        )
+    )
+
     cls_infer_run_name = f"{run_name}-cls-{args.cls_inference_split}"
     cls_infer_args = [
         "--config",
@@ -259,6 +311,27 @@ def main(argv=None) -> int:
         _run_cli(infer_main, seg_infer_args, f"segmentation inference ({split_name})")
         manifest["stages"][index]["status"] = "completed"
         manifest["stages"][index]["summary_path"] = str(seg_pred_root / f"{seg_infer_run_name}_inference_summary.json")
+        manifest["updated_at"] = utc_now_iso()
+        write_json(manifest_path, manifest)
+
+    postprocess_stage_index = len(seg_splits) + 1
+    if not args.no_postprocess:
+        summary = run_postprocess_visualize_stage(
+            seg_pred_root,
+            lesion_threshold=lesion_threshold,
+            gland_threshold=gland_threshold,
+            write_3d=not args.no_3d_visuals,
+            use_cdn=args.plotly_cdn,
+        )
+        manifest["stages"][postprocess_stage_index].update({
+            "status": "completed",
+            "cases_processed": summary["cases_processed"],
+            "cases_skipped": summary["cases_skipped"],
+            "gland_present_count": summary["gland_present_count"],
+            "html_written": summary["html_written"],
+            "lesion_voxels_raw_total": summary["lesion_voxels_raw_total"],
+            "lesion_voxels_post_total": summary["lesion_voxels_post_total"],
+        })
         manifest["updated_at"] = utc_now_iso()
         write_json(manifest_path, manifest)
 
