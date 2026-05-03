@@ -173,7 +173,9 @@ def write_case_html(
         f"{header}{plot_div}"
         "</body></html>"
     )
-    Path(path).write_text(full)
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(full)
 
 
 def write_index_html(summaries: list[CaseSummary], path: Path) -> None:

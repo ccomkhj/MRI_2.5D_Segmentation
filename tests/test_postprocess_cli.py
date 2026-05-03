@@ -174,3 +174,27 @@ def test_postprocess_cli_runs_dump_when_predictions_missing(tmp_path: Path) -> N
     assert rc == 0
     assert (run_dir / "diagnostic" / "predictions" / "case_a" / "prob.npz").exists()
     assert (run_dir / "diagnostic" / "postprocessed" / "case_a" / "lesion_mask.npz").exists()
+
+
+def test_postprocess_cli_handles_nested_case_ids(tmp_path: Path) -> None:
+    """case_ids with slashes (e.g. 'class3/case_0310') get nested dirs in the dump.
+
+    Verify the CLI walks them via rglob and writes postprocessed artifacts at
+    the same relative path; meta.json records the full nested case_id.
+    """
+    run_dir = _seed_run_dir(tmp_path)
+    lesion_prob = np.full((1, 4, 4), 0.9, dtype=np.float32)
+    gland_prob = np.full((1, 4, 4), 0.9, dtype=np.float32)
+    _seed_predictions(run_dir, "class3/case_0310", lesion_prob, gland_prob)
+    _seed_predictions(run_dir, "class4/case_0143", lesion_prob, gland_prob)
+
+    rc = postprocess_cli.main([str(run_dir)])
+
+    assert rc == 0
+    pp_root = run_dir / "diagnostic" / "postprocessed"
+    assert (pp_root / "class3" / "case_0310" / "lesion_mask.npz").exists()
+    assert (pp_root / "class4" / "case_0143" / "lesion_mask.npz").exists()
+    meta = json.loads(
+        (pp_root / "class3" / "case_0310" / "meta.json").read_text(),
+    )
+    assert meta["case_id"] == "class3/case_0310"

@@ -62,12 +62,20 @@ def _process_case(
     output_dir: Path,
     lesion_threshold: float,
     gland_threshold: float,
+    case_id: str | None = None,
 ) -> bool:
-    """Postprocess one cached case. Returns True if written, False if skipped."""
+    """Postprocess one cached case. Returns True if written, False if skipped.
+
+    ``case_id`` defaults to ``case_dir.name`` for backward compatibility with
+    flat layouts; pass the full relative case path for nested layouts
+    (e.g. ``class3/case_0310``).
+    """
+    if case_id is None:
+        case_id = case_dir.name
     prob_path = case_dir / "prob.npz"
     if not prob_path.exists():
         warnings.warn(
-            f"[postprocess] {case_dir.name}: prob.npz missing, skipping.",
+            f"[postprocess] {case_id}: prob.npz missing, skipping.",
             stacklevel=2,
         )
         return False
@@ -85,7 +93,7 @@ def _process_case(
     np.savez_compressed(output_dir / "lesion_mask.npz", mask=lesion_mask)
     np.savez_compressed(output_dir / "gland_mask.npz", mask=gland_mask)
     (output_dir / "meta.json").write_text(json.dumps({
-        "case_id": case_dir.name,
+        "case_id": case_id,
         "lesion_threshold": lesion_threshold,
         "gland_threshold": gland_threshold,
         "gland_present": gland_present,
@@ -138,12 +146,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"[postprocess] dump: {dump_summary}")
 
-    case_dirs = sorted(p for p in predictions_dir.iterdir() if p.is_dir())
+    # Case dirs are wherever a prob.npz lives — use rglob so nested case_ids
+    # (e.g. "class3/case_0310") work the same as flat case_ids.
+    prob_paths = sorted(predictions_dir.rglob("prob.npz"))
     n_written = 0
-    for case_dir in case_dirs:
-        out_dir = postprocessed_dir / case_dir.name
+    for prob_path in prob_paths:
+        case_dir = prob_path.parent
+        case_id = case_dir.relative_to(predictions_dir).as_posix()
+        out_dir = postprocessed_dir / case_id
         if out_dir.exists() and not args.force:
-            print(f"[postprocess] {case_dir.name}: cached, skipping (use --force to regenerate).")
+            print(f"[postprocess] {case_id}: cached, skipping (use --force to regenerate).")
             continue
         if out_dir.exists() and args.force:
             for f in out_dir.iterdir():
@@ -151,6 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if _process_case(
             case_dir=case_dir, output_dir=out_dir,
             lesion_threshold=lesion_threshold, gland_threshold=gland_threshold,
+            case_id=case_id,
         ):
             n_written += 1
 

@@ -83,8 +83,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # available case meta. Falls back to 0.5 if no per-case meta exists.
     lesion_threshold_used = 0.5
     gland_threshold_used = 0.5
-    for case_dir in sorted(p for p in postprocessed_dir.iterdir() if p.is_dir()):
-        meta_path = case_dir / "meta.json"
+    # Cases are wherever a lesion_mask.npz lives — use rglob so nested case_ids
+    # (e.g. "class3/case_0310") work the same as flat case_ids.
+    lesion_mask_paths = sorted(postprocessed_dir.rglob("lesion_mask.npz"))
+    for lm_path in lesion_mask_paths:
+        meta_path = lm_path.parent / "meta.json"
         if meta_path.exists():
             try:
                 pp_meta = json.loads(meta_path.read_text())
@@ -94,7 +97,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             except (OSError, json.JSONDecodeError, ValueError):
                 continue
 
-    case_ids = sorted(p.name for p in postprocessed_dir.iterdir() if p.is_dir())
+    case_ids = sorted(
+        lm.parent.relative_to(postprocessed_dir).as_posix()
+        for lm in lesion_mask_paths
+    )
     case_rows: list[CaseRow] = []
     lesion_rows: list[LesionRow] = []
     cases_skipped: list[str] = []
