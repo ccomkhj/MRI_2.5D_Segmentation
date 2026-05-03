@@ -18,6 +18,7 @@ from mri.config.loader import load_config
 from mri.cli.infer import _build_dataloader, _load_checkpoint
 from mri.inference.segmentation import run_segmentation_inference
 from mri.inference.html_report import generate_html_report
+from mri.inference.postprocess_visualize import process_case as _postprocess_visualize_case
 from mri.models import create_segmentation_model
 from mri.training.trainer import resolve_device
 
@@ -295,6 +296,22 @@ def run_dicom_segmentation(
     )
 
     case_out = predictions_dir / case_id
+    # Apply postprocess rules + emit per-case 3D Plotly HTML next to the
+    # raw prob arrays. The 2D report below also gets gland-constrained.
+    postprocess_stats = _postprocess_visualize_case(
+        case_out,
+        lesion_threshold=float(default_target_threshold),
+        gland_threshold=float(prostate_threshold),
+        write_3d=True,
+        use_cdn=False,
+        case_id=case_id,
+    )
+    visual_3d_href = (
+        f"predictions/{case_id}/visual_3d.html"
+        if postprocess_stats is not None and (case_out / "visual_3d.html").exists()
+        else None
+    )
+
     report_path = output_dir / "report.html"
     report_info = generate_html_report(
         case_output_dir=case_out,
@@ -306,6 +323,8 @@ def run_dicom_segmentation(
         default_target_threshold=default_target_threshold,
         source_zip=zip_path,
         checkpoint_path=ckpt["ckpt_file"],
+        apply_postprocess_to_2d=True,
+        visual_3d_href=visual_3d_href,
     )
 
     if open_browser:
@@ -318,6 +337,8 @@ def run_dicom_segmentation(
         "predictions_dir": str(predictions_dir),
         "overlays_dir": str(case_out / "overlays"),
         "html_report_path": report_info["report_path"],
+        "visual_3d_path": str(case_out / "visual_3d.html") if visual_3d_href else None,
+        "postprocess_stats": postprocess_stats,
         "prostate_slices": report_info["prostate_slices"],
         "target_slices": report_info["target_slices"],
         "target_slices_by_threshold": report_info["target_slices_by_threshold"],
@@ -590,6 +611,20 @@ def run_aligned_segmentation(
     )
 
     case_out = predictions_dir / case_id
+    postprocess_stats = _postprocess_visualize_case(
+        case_out,
+        lesion_threshold=float(default_target_threshold),
+        gland_threshold=float(prostate_threshold),
+        write_3d=True,
+        use_cdn=False,
+        case_id=case_id,
+    )
+    visual_3d_href = (
+        f"predictions/{case_id}/visual_3d.html"
+        if postprocess_stats is not None and (case_out / "visual_3d.html").exists()
+        else None
+    )
+
     report_path = output_dir / "report.html"
     report_info = generate_html_report(
         case_output_dir=case_out,
@@ -600,6 +635,8 @@ def run_aligned_segmentation(
         target_thresholds=target_thresholds,
         default_target_threshold=default_target_threshold,
         checkpoint_path=ckpt["ckpt_file"],
+        apply_postprocess_to_2d=True,
+        visual_3d_href=visual_3d_href,
     )
 
     if open_browser:

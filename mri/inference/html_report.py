@@ -130,12 +130,25 @@ def generate_html_report(
     source_zip: Optional[Path] = None,
     checkpoint_path: Optional[Path] = None,
     threshold: Optional[float] = None,  # back-compat: if given, used for both classes, slider disabled
+    apply_postprocess_to_2d: bool = True,
+    visual_3d_href: Optional[str] = None,
 ) -> Dict[str, object]:
     """Render a self-contained HTML segmentation report with a target-threshold slider.
 
     One overlay is precomputed per (slice × target_threshold) and embedded inline.
     The report returns slice lists at the default target threshold so a batch
     dashboard can summarise consistently.
+
+    When ``apply_postprocess_to_2d`` is True (default) the target masks
+    rendered into the overlays + the per-threshold slice/pixel summaries are
+    constrained to the predicted prostate (rules 1+2 from
+    ``mri.diagnostics.postprocess.apply_postprocess``): voxels outside the
+    prostate are masked away, and when no prostate is detected anywhere all
+    target voxels are zeroed.
+
+    When ``visual_3d_href`` is provided, a "View 3D" link to that path
+    appears in the controls strip (typically points at a sibling
+    ``visual_3d.html`` produced by ``mri.inference.postprocess_visualize``).
     """
 
     case_output_dir = Path(case_output_dir)
@@ -163,13 +176,26 @@ def generate_html_report(
     default_idx = target_ts.index(default_target_threshold)
 
     num_slices, h, w = prostate.shape
-    prostate_slices = [i for i in range(num_slices) if prostate[i].max() >= prostate_threshold]
-    target_slices_by_threshold: Dict[float, List[int]] = {
-        t: [i for i in range(num_slices) if target[i].max() >= t] for t in target_ts
-    }
-    target_pixels_by_threshold: Dict[float, int] = {
-        t: int((target >= t).sum()) for t in target_ts
-    }
+    gland_volume = prostate >= prostate_threshold  # (Z, H, W) bool
+    gland_present = bool(gland_volume.any())
+
+    def _target_mask_at(t: float) -> np.ndarray:
+        raw = target >= t
+        if not apply_postprocess_to_2d:
+            return raw
+        if not gland_present:
+            return np.zeros_like(raw)
+        return raw & gland_volume
+
+    prostate_slices = [i for i in range(num_slices) if gland_volume[i].any()]
+    target_slices_by_threshold: Dict[float, List[int]] = {}
+    target_pixels_by_threshold: Dict[float, int] = {}
+    target_volumes_by_threshold: Dict[float, np.ndarray] = {}
+    for t in target_ts:
+        tm_volume = _target_mask_at(t)
+        target_volumes_by_threshold[t] = tm_volume
+        target_slices_by_threshold[t] = [i for i in range(num_slices) if tm_volume[i].any()]
+        target_pixels_by_threshold[t] = int(tm_volume.sum())
     default_target_slices = target_slices_by_threshold[default_target_threshold]
 
     per_slice_overlays: List[List[str]] = []  # [slice][threshold_idx] -> base64 PNG
@@ -179,10 +205,10 @@ def generate_html_report(
     has_any_gt = False
     for i in range(num_slices):
         base = _load_t2_slice(metadata_root, case_id, i, (h, w))
-        pm = prostate[i] >= prostate_threshold
+        pm = gland_volume[i]
         variants = []
         for t in target_ts:
-            tm = target[i] >= t
+            tm = target_volumes_by_threshold[t][i]
             overlay = _report_overlay(base, pm, tm)
             variants.append(_png_to_base64(overlay))
         per_slice_overlays.append(variants)
@@ -206,9 +232,18 @@ def generate_html_report(
         else:
             per_slice_gt.append(None)
 
+        # When postprocess is on, the displayed t_max + threshold-hit indicator
+        # reflect the gland-constrained target so the per-slice card stays in
+        # sync with what the overlay actually shows.
+        if apply_postprocess_to_2d and gland_present and gland_volume[i].any():
+            t_max_value = float(target[i][gland_volume[i]].max())
+        elif apply_postprocess_to_2d:
+            t_max_value = 0.0
+        else:
+            t_max_value = float(target[i].max())
         per_slice_meta.append({
             "p_max": float(prostate[i].max()),
-            "t_max": float(target[i].max()),
+            "t_max": t_max_value,
             "p_hit": bool(prostate[i].max() >= prostate_threshold),
             "gt_p": bool(gt_prostate is not None and gt_prostate.any()),
             "gt_t": bool(gt_target is not None and gt_target.any()),
@@ -383,6 +418,16 @@ def generate_html_report(
         "<label><input id='gt-toggle' type='checkbox' checked /> show ground truth</label>"
         if has_any_gt else ""
     )
+    visual_3d_html = (
+        f"<a href='{html_lib.escape(visual_3d_href)}' target='_blank' "
+        "style='font-size:13px; color:#1a73e8; text-decoration:none; margin-left:auto;'>"
+        "View 3D ↗</a>"
+        if visual_3d_href else ""
+    )
+    postprocess_note = (
+        " Off-prostate target voxels are masked away."
+        if apply_postprocess_to_2d else ""
+    )
     controls_html = (
         "<div class='controls'>"
         f"<label>target threshold: "
@@ -392,8 +437,10 @@ def generate_html_report(
         f"{gt_toggle_html}"
         f"<span style='font-size:12px; color:#888;'>"
         f"prostate fixed at {prostate_threshold:.2f}. "
-        f"sweep values: {', '.join(f'{t:.2f}' for t in target_ts)}"
+        f"sweep values: {', '.join(f'{t:.2f}' for t in target_ts)}."
+        f"{postprocess_note}"
         f"</span>"
+        f"{visual_3d_html}"
         "</div>"
     )
 
